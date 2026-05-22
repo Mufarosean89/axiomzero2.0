@@ -197,6 +197,12 @@ class TrainingConfig:
     temperature_threshold: int = 10   # use high temp for first N steps, then greedy
     verbose: bool = False
 
+    # ── Cold-start / supervised pre-training ─────────────────────────
+    pretrain_epochs: int = 5          # Number of supervised pre-training epochs
+    pretrain_batch_size: int = 32     # Batch size during pre-training
+    pretrain_learning_rate: float = 5e-4  # Learning rate for pre-training
+    pretrain_on_builtin: bool = True  # Auto-generate seed data from benchmark suite
+
 
 class SelfPlayTrainer:
     """
@@ -226,9 +232,178 @@ class SelfPlayTrainer:
 
         os.makedirs(self.config.checkpoint_dir, exist_ok=True)
 
+    # ── Cold-start: seed buffer with expert demonstrations ────────────────
+
+    def seed_buffer(self, examples: List[TrainingExample]) -> int:
+        """
+        Pre-fill the replay buffer with expert demonstration examples.
+
+        This is the primary mechanism for cold-start mitigation: before any
+        self-play episodes are run, seed the buffer with behavioural-cloning
+        data from human-written proofs (or heuristic-generated ones).
+
+        Args:
+            examples: List of TrainingExample from dataset loaders or the
+                      built-in seed data generator.
+
+        Returns:
+            Number of examples added to the buffer.
+        """
+        count = 0
+        for ex in examples:
+            self.replay_buffer.append(ex)
+            count += 1
+        print(f"  Seeded replay buffer with {count} expert demonstration(s).")
+        return count
+
+    # ── Cold-start: supervised pre-training ───────────────────────────────
+
+    def pretrain_supervised(
+        self,
+        num_epochs: Optional[int] = None,
+        batch_size: Optional[int] = None,
+        lr: Optional[float] = None,
+    ) -> Tuple[float, float]:
+        """
+        Run supervised behavioural cloning pre-training on the replay buffer.
+
+        Before self-play begins, this method treats the seeded expert
+        demonstrations as supervised data and performs multiple gradient
+        steps to warm-start the network.  This gives the agent a much better
+        policy prior than random initialisation.
+
+        Each epoch randomly samples mini-batches from the buffer (with
+        replacement) and runs ``update_weights`` on them.
+
+        Args:
+            num_epochs : Number of passes over the buffer (default from config).
+            batch_size : Samples per gradient step (default from config).
+            lr         : Learning rate (default from config).
+
+        Returns:
+            (avg_policy_loss, avg_value_loss) over the last epoch.
+        """
+        cfg = self.config
+        num_epochs = num_epochs or cfg.pretrain_epochs
+        batch_size = batch_size or cfg.pretrain_batch_size
+        lr = lr or cfg.pretrain_learning_rate
+
+        buffer_size = len(self.replay_buffer)
+        if buffer_size == 0:
+            print("  WARNING: pretrain_supervised called with empty buffer. Skipping.")
+            return 0.0, 0.0
+
+        if buffer_size < batch_size:
+            batch_size = buffer_size
+
+        print(f"\n  --- Supervised Pre-Training ---")
+        print(f"  Epochs       : {num_epochs}")
+        print(f"  Batch size   : {batch_size}")
+        print(f"  Buffer size  : {buffer_size}")
+        print(f"  Learning rate: {lr}")
+
+        total_pi, total_v = 0.0, 0.0
+
+        for epoch in range(1, num_epochs + 1):
+            epoch_pi_sum = 0.0
+            epoch_v_sum = 0.0
+            num_batches = 0
+
+            # Sample batches (with replacement) to cover ~2x buffer
+            num_steps = max(len(self.replay_buffer) * 2 // batch_size, 1)
+            for _ in range(num_steps):
+                batch = random.sample(list(self.replay_buffer), batch_size)
+
+                state_vecs = [ex.state_vec for ex in batch]
+                policies = [ex.mcts_policy for ex in batch]
+                values = [ex.outcome for ex in batch]
+
+                pi_loss, v_loss = self.net.update_weights(
+                    target_policies=policies,
+                    target_values=values,
+                    state_vecs=state_vecs,
+                    lr=lr,
+                )
+                epoch_pi_sum += pi_loss
+                epoch_v_sum += v_loss
+                num_batches += 1
+
+            avg_pi = epoch_pi_sum / max(num_batches, 1)
+            avg_v = epoch_v_sum / max(num_batches, 1)
+            total_pi += avg_pi
+            total_v += avg_v
+
+            if cfg.verbose:
+                print(f"    Epoch {epoch:2d}/{num_epochs}  pi_loss={avg_pi:.4f}  v_loss={avg_v:.4f}")
+
+        avg_pi_final = total_pi / max(num_epochs, 1)
+        avg_v_final = total_v / max(num_epochs, 1)
+        print(f"  Pre-training complete.  Avg pi_loss={avg_pi_final:.4f}  v_loss={avg_v_final:.4f}")
+        print(f"  ---")
+
+        # Record pre-training stats
+        self.stats.append({
+            "phase": "supervised_pretrain",
+            "pretrain_epochs": num_epochs,
+            "pretrain_policy_loss": avg_pi_final,
+            "pretrain_value_loss": avg_v_final,
+            "buffer_size": buffer_size,
+        })
+
+        return avg_pi_final, avg_v_final
+
+    # ── Auto seed from built-in benchmarks ─────────────────────────────
+
+    def _auto_seed_and_pretrain(self) -> None:
+        """
+        Automatically generate seed data from the built-in benchmark suite
+        and run supervised pre-training.
+
+        This is the default cold-start mitigation strategy: it requires no
+        external datasets and works out-of-the-box.
+        """
+        cfg = self.config
+        print(f"\n  --- Cold-Start: Generating seed data from built-in benchmarks ---")
+
+        try:
+            from .dataset_loaders import (
+                generate_builtin_seed_data,
+                convert_to_training_examples,
+            )
+
+            raw_traces = generate_builtin_seed_data(
+                proof_states=self.proof_states,
+                max_traces=min(50, len(self.proof_states) * 3),
+                max_steps_per_trace=10,
+                temperature=0.0,  # greedy / deterministic
+                verbose=cfg.verbose,
+            )
+
+            examples = convert_to_training_examples(raw_traces)
+            seeded = self.seed_buffer(examples)
+
+            if seeded > 0 and cfg.pretrain_epochs > 0:
+                self.pretrain_supervised(
+                    num_epochs=cfg.pretrain_epochs,
+                    batch_size=cfg.pretrain_batch_size,
+                    lr=cfg.pretrain_learning_rate,
+                )
+
+        except ImportError as e:
+            print(f"  WARNING: Could not load dataset_loaders module: {e}")
+            print(f"  Skipping cold-start pre-training.")
+        except Exception as e:
+            print(f"  WARNING: Seed data generation failed: {e}")
+            print(f"  Skipping cold-start pre-training.")
+
     def run(self) -> PolicyValueNet:
         """
         Run the full self-play training loop.
+
+        If the config specifies pre-training, this will:
+          1. Seed the replay buffer with expert demonstrations (built-in or loaded).
+          2. Run supervised behavioural cloning to warm-start the network.
+          3. Then proceed with the standard AlphaZero self-play loop.
 
         Returns the trained PolicyValueNet.
         """
@@ -239,7 +414,13 @@ class SelfPlayTrainer:
         print(f"  Iterations     : {cfg.num_iterations}")
         print(f"  Episodes/iter  : {cfg.episodes_per_iteration}")
         print(f"  MCTS sims      : {cfg.mcts_simulations}")
-        print(f"{'='*60}\n")
+        print(f"{'='*60}")
+
+        # ── Cold-start: seed buffer & pre-train if applicable ────────────
+        if cfg.pretrain_on_builtin and len(self.replay_buffer) == 0:
+            self._auto_seed_and_pretrain()
+
+        print(f"\n{'='*60}")
 
         for iteration in range(1, cfg.num_iterations + 1):
             iter_start = time.time()

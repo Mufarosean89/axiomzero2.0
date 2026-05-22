@@ -246,6 +246,222 @@ def add(x: int, y: int) -> int:
     print("  PASS: test_spec_ingestion")
 
 
+def test_unsupported_construct_warnings():
+    """Test that unsupported Python constructs generate warnings."""
+    from ast_extractor import parse_source, ParserConfig, ParserWarning
+
+    # Test try/except warning
+    source = """
+def unsafe_divide(x: int, y: int) -> int:
+    try:
+        return x // y
+    except:
+        return 0
+"""
+    ir = parse_source(source, "test_try")
+    warnings = ir.warnings
+    assert len(warnings) >= 1, f"Expected at least 1 warning, got {len(warnings)}"
+    assert any("try/except" in w.construct for w in warnings), \
+        f"Expected 'try/except' warning, got: {[str(w) for w in warnings]}"
+    print(f"  Warnings found: {len(warnings)}")
+    for w in warnings:
+        print(f"    - {w}")
+
+    # Test generator warning
+    source = """
+def get_squares(n: int) -> list:
+    return (x * x for x in range(n))
+"""
+    ir = parse_source(source, "test_gen")
+    warnings = ir.warnings
+    assert len(warnings) >= 1, f"Expected at least 1 warning, got {len(warnings)}"
+    assert any("generator" in w.construct for w in warnings), \
+        f"Expected 'generator' warning, got: {[str(w) for w in warnings]}"
+
+    # Test walrus operator warning
+    source = """
+def process(x: int) -> bool:
+    if (y := x + 1) > 0:
+        return True
+    return False
+"""
+    ir = parse_source(source, "test_walrus")
+    warnings = ir.warnings
+    assert len(warnings) >= 1, f"Expected at least 1 warning, got {len(warnings)}"
+    assert any("walrus" in w.construct for w in warnings), \
+        f"Expected 'walrus' warning, got: {[str(w) for w in warnings]}"
+
+    # Test f-string warning
+    source = """
+def greet(name: str) -> str:
+    return f"Hello, {name}!"
+"""
+    ir = parse_source(source, "test_fstring")
+    warnings = ir.warnings
+    assert len(warnings) >= 1, f"Expected at least 1 warning, got {len(warnings)}"
+    assert any("f-string" in w.construct for w in warnings), \
+        f"Expected 'f-string' warning, got: {[str(w) for w in warnings]}"
+
+    print("  PASS: test_unsupported_construct_warnings")
+
+
+def test_strict_mode():
+    """Test that strict mode raises ParserError on unsupported constructs."""
+    from ast_extractor import parse_source, ParserConfig, ParserError
+
+    source = """
+def unsafe_divide(x: int, y: int) -> int:
+    try:
+        return x // y
+    except:
+        return 0
+"""
+    config = ParserConfig(strict_mode=True)
+    try:
+        ir = parse_source(source, "test_strict", config=config)
+        assert False, "Expected ParserError in strict mode"
+    except ParserError as e:
+        assert "try/except" in str(e), f"Expected 'try/except' in error, got: {e}"
+        print(f"  Strict mode correctly raised: {e}")
+
+    print("  PASS: test_strict_mode")
+
+
+def test_no_unsupported_warnings_for_valid_code():
+    """Test that valid code produces no warnings."""
+    from ast_extractor import parse_source, ParserConfig
+
+    source = """
+import torch
+
+@requires("x > 0")
+@ensures("result > 0")
+def absolute(x: int) -> int:
+    if x < 0:
+        return -x
+    return x
+"""
+    ir = parse_source(source, "test_valid")
+    # Only warnings we expect are from imports inside functions, not at module level
+    warnings = [w for w in ir.warnings]
+    assert len(warnings) == 0, f"Expected 0 warnings, got {len(warnings)}: {[str(w) for w in warnings]}"
+
+    print("  PASS: test_no_unsupported_warnings_for_valid_code")
+
+
+def test_mutable_object_warnings():
+    """Test that mutable object operations generate warnings."""
+    from ast_extractor import parse_source
+
+    # Test attribute assignment warning (obj.attr = val)
+    source = """
+class Counter:
+    def __init__(self):
+        self.count = 0
+    def increment(self):
+        self.count = self.count + 1
+"""
+    ir = parse_source(source, "test_attr_assign")
+    warnings = ir.warnings
+    assert len(warnings) >= 2, f"Expected at least 2 warnings, got {len(warnings)}: {[str(w) for w in warnings]}"
+    assert any("attribute assignment" in w.construct for w in warnings), \
+        f"Expected 'attribute assignment' warning, got: {[str(w) for w in warnings]}"
+    print(f"  Attribute assignment warnings: {[str(w) for w in warnings if 'attribute' in w.construct]}")
+
+    # Test subscript assignment warning (list[i] = val)
+    source = """
+def set_first(items: list, val: int):
+    items[0] = val
+"""
+    ir = parse_source(source, "test_subscript_assign")
+    warnings = ir.warnings
+    assert len(warnings) >= 1, f"Expected at least 1 warning, got {len(warnings)}"
+    assert any("subscript assignment" in w.construct for w in warnings), \
+        f"Expected 'subscript assignment' warning, got: {[str(w) for w in warnings]}"
+    print(f"  Subscript assignment warnings: {[str(w) for w in warnings if 'subscript' in w.construct]}")
+
+    # Test mutating method call warning
+    source = """
+def add_item(items: list, x: int):
+    items.append(x)
+"""
+    ir = parse_source(source, "test_mutating_method")
+    warnings = ir.warnings
+    assert len(warnings) >= 1, f"Expected at least 1 warning, got {len(warnings)}"
+    assert any("mutating method" in w.construct for w in warnings), \
+        f"Expected 'mutating method' warning, got: {[str(w) for w in warnings]}"
+    print(f"  Mutating method warnings: {[str(w) for w in warnings if 'mutating' in w.construct]}")
+
+    print("  PASS: test_mutable_object_warnings")
+
+
+def test_termination_warnings():
+    """Test that non-terminating patterns generate warnings."""
+    from ast_extractor import parse_source
+
+    # Test while True with no break
+    source = """
+def poll_until():
+    while True:
+        pass
+"""
+    ir = parse_source(source, "test_infinite_loop")
+    warnings = ir.warnings
+    assert len(warnings) >= 1, f"Expected at least 1 warning, got {len(warnings)}"
+    assert any("infinite loop" in w.construct for w in warnings), \
+        f"Expected 'infinite loop' warning, got: {[str(w) for w in warnings]}"
+    print(f"  Infinite loop warnings: {[str(w) for w in warnings if 'infinite' in w.construct]}")
+
+    # Test while True with break (should NOT warn)
+    source = """
+def find_first_with_break(items: list, target: int) -> int:
+    i = 0
+    while True:
+        if items[i] == target:
+            break
+        i = i + 1
+    return i
+"""
+    ir = parse_source(source, "test_break_loop")
+    infinite_warnings = [w for w in ir.warnings if "infinite loop" in w.construct]
+    assert len(infinite_warnings) == 0, \
+        f"Expected no 'infinite loop' warnings when break exists, got: {[str(w) for w in infinite_warnings]}"
+
+    # Test recursive function
+    source = """
+def factorial(n: int) -> int:
+    if n <= 1:
+        return 1
+    return n * factorial(n - 1)
+"""
+    ir = parse_source(source, "test_recursion")
+    warnings = ir.warnings
+    assert len(warnings) >= 1, f"Expected at least 1 warning, got {len(warnings)}"
+    assert any("recursion" in w.construct for w in warnings), \
+        f"Expected 'recursion' warning, got: {[str(w) for w in warnings]}"
+    print(f"  Recursion warnings: {[str(w) for w in warnings if 'recursion' in w.construct]}")
+
+    print("  PASS: test_termination_warnings")
+
+
+def test_warning_suppression():
+    """Test that warnings can be suppressed via config."""
+    from ast_extractor import parse_source, ParserConfig, ParserWarning
+
+    source = """
+def unsafe_divide(x: int, y: int) -> int:
+    try:
+        return x // y
+    except:
+        return 0
+"""
+    config = ParserConfig(collect_warnings=False)
+    ir = parse_source(source, "test_suppress", config=config)
+    assert len(ir.warnings) == 0, f"Expected 0 warnings when suppressed, got {len(ir.warnings)}"
+
+    print("  PASS: test_warning_suppression")
+
+
 def test_full_pipeline():
     """Test the full Phase 1 pipeline end-to-end."""
     from ast_extractor import parse_source, normalize
@@ -337,6 +553,12 @@ def run_all_tests():
         test_abstract_interpreter,
         test_abstract_interpreter_tensors,
         test_spec_ingestion,
+        test_unsupported_construct_warnings,
+        test_strict_mode,
+        test_no_unsupported_warnings_for_valid_code,
+        test_warning_suppression,
+        test_mutable_object_warnings,
+        test_termination_warnings,
         test_full_pipeline,
     ]
     

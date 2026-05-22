@@ -24,12 +24,28 @@ Public API
     mcts.best_action(state)     -> tactic_str
     TacticSimulator()           -> simulator
 
+    Cold-Start / Dataset Loaders
+    ----------------------------
+    parse_leandojo_trace(path)          -> List[RawProofTrace]
+    parse_minif2f(path)                 -> List[RawProofTrace]
+    parse_proofnet(path)                -> List[RawProofTrace]
+    parse_lean_workbook(path)           -> List[RawProofTrace]
+    load_dataset(path)                  -> List[RawProofTrace]
+    generate_builtin_seed_data(...)     -> List[RawProofTrace]
+    convert_to_training_examples(...)   -> List[TrainingExample]
+    convert_with_mcts_policy(...)       -> List[TrainingExample]
+    save_seed_data(examples, path)
+    load_seed_data(path)                -> List[TrainingExample]
+    DatasetFormat, RawProofStep, RawProofTrace
+
     Self-Play
     ---------
     SelfPlayTrainer(proof_states, config)
-    trainer.run()               -> PolicyValueNet
-    run_episode(state, net)     -> EpisodeResult
-    train_from_source(source)   -> (net, stats)
+    trainer.run()                       -> PolicyValueNet
+    trainer.seed_buffer(examples)       -> int
+    trainer.pretrain_supervised(...)    -> (pi_loss, v_loss)
+    run_episode(state, net)             -> EpisodeResult
+    train_from_source(source)           -> (net, stats)
     TrainingConfig(...)
 """
 
@@ -44,6 +60,21 @@ from .self_play import (
     run_episode,
     train_from_source,
 )
+from .dataset_loaders import (
+    parse_leandojo_trace,
+    parse_minif2f,
+    parse_proofnet,
+    parse_lean_workbook,
+    load_dataset,
+    generate_builtin_seed_data,
+    convert_to_training_examples,
+    convert_with_mcts_policy,
+    save_seed_data,
+    load_seed_data,
+    DatasetFormat,
+    RawProofStep,
+    RawProofTrace,
+)
 
 __all__ = [
     # Encoder
@@ -55,6 +86,20 @@ __all__ = [
     "MCTS",
     "TacticSimulator",
     "MCTSNode",
+    # Dataset loaders
+    "parse_leandojo_trace",
+    "parse_minif2f",
+    "parse_proofnet",
+    "parse_lean_workbook",
+    "load_dataset",
+    "generate_builtin_seed_data",
+    "convert_to_training_examples",
+    "convert_with_mcts_policy",
+    "save_seed_data",
+    "load_seed_data",
+    "DatasetFormat",
+    "RawProofStep",
+    "RawProofTrace",
     # Self-play
     "SelfPlayTrainer",
     "TrainingConfig",

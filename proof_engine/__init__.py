@@ -30,6 +30,12 @@ from .proof_state import (
     Hypothesis,
     TacticStep,
 )
+from .lemma_db import (
+    LemmaDatabase,
+    LemmaEntry,
+    LemmaSuggestion,
+    LEMMA_EMBED_DIM,
+)
 from .tactics import (
     TacticExecutor,
     TacticTemplate,
@@ -65,6 +71,12 @@ __all__ = [
     "TacticExecutor",
     "TacticTemplate",
     "TacticResult",
+    # Lemma Database
+    "LemmaDatabase",
+    "LemmaEntry",
+    "LemmaSuggestion",
+    "LEMMA_EMBED_DIM",
+    # Tactics
     "TacticCategory",
     "CORE_TACTICS",
     "ZERO_ARG_TACTICS",

@@ -202,7 +202,7 @@ def obligation_to_lean_theorem(obligation: ProofObligation) -> str:
 def _python_type_to_lean(py_type: str) -> str:
     """Convert a Python type string to a Lean 4 type."""
     mapping = {
-        "int": "ℕ",
+        "int": "ℤ",
         "float": "ℝ",
         "bool": "Bool",
         "str": "String",

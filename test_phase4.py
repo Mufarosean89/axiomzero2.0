@@ -83,11 +83,11 @@ def test_ir_to_lean_basic():
 
     # Test type translation
     type_tests = [
-        ("int", "ℕ"),
+        ("int", "ℤ"),
         ("float", "ℝ"),
         ("bool", "Bool"),
         ("str", "String"),
-        ("List[int]", "List ℕ"),
+        ("List[int]", "List ℤ"),
         ("Optional[str]", "Option String"),
     ]
 
@@ -467,10 +467,10 @@ def test_type_translation_edge_cases():
     compiler = IRToLeanCompiler()
 
     tests = [
-        ("int", "ℕ"),
-        ("List[int]", "List ℕ"),
+        ("int", "ℤ"),
+        ("List[int]", "List ℤ"),
         ("Optional[str]", "Option String"),
-        ("List[List[int]]", "List List ℕ"),
+        ("List[List[int]]", "List List ℤ"),
         ("torch.Tensor", "torch.Tensor"),  # unknown type, pass through
         ("", ""),  # empty string
     ]

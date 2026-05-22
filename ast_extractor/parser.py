@@ -30,6 +30,8 @@ from .ir import (
     ExpressionIR,
     TypeAnnotation,
     TensorOpKind,
+    ParserConfig,
+    ParserWarning,
 )
 
 
@@ -96,6 +98,59 @@ class ParserError(Exception):
     pass
 
 
+# ─── Known Mutating Methods ────────────────────────────────────────────────────
+
+_MUTATING_METHODS: Set[str] = {
+    # List methods
+    "append", "extend", "insert", "remove", "pop", "sort", "reverse", "clear",
+    # Dict methods
+    "update", "setdefault", "popitem",
+    # Set methods
+    "add", "discard", "difference_update", "intersection_update", "symmetric_difference_update",
+}
+
+
+# ─── Known Unsupported Constructs ─────────────────────────────────────────────
+
+# Statement types that are known to be unsupported (silently dropped otherwise).
+# Maps ast node type → (construct_name, explanation).
+_UNSUPPORTED_STATEMENTS: Dict[Any, tuple[str, str]] = {
+    ast.Try: ("try/except/finally", "Exception handling is not supported. Use @requires/@ensures instead."),
+    ast.Delete: ("del", "Delete statements are not supported."),
+    ast.Global: ("global", "Global declarations are not supported."),
+    ast.Nonlocal: ("nonlocal", "Nonlocal declarations are not supported."),
+    ast.AsyncFor: ("async for", "Async iteration is not supported."),
+    ast.AsyncWith: ("async with", "Async context managers are not supported."),
+}
+
+# Register Python-version-dependent unsupported statements safely
+_TRYSTAR = getattr(ast, "TryStar", None)
+if _TRYSTAR is not None:
+    _UNSUPPORTED_STATEMENTS[_TRYSTAR] = ("try*", "Star import exception handling is not supported.")
+
+_MATCH = getattr(ast, "Match", None)
+if _MATCH is not None:
+    _UNSUPPORTED_STATEMENTS[_MATCH] = ("match/case", "Pattern matching is not supported.")
+
+# Expression types that are known to be unsupported (silently dropped otherwise).
+_UNSUPPORTED_EXPRESSIONS: Dict[Any, tuple[str, str]] = {
+    ast.GeneratorExp: ("generator expression", "Generator comprehensions are not supported; use list comprehension instead."),
+    ast.SetComp: ("set comprehension", "Set comprehensions are not supported."),
+    ast.DictComp: ("dict comprehension", "Dict comprehensions are not supported."),
+    ast.Yield: ("yield", "Generators/yield are not supported."),
+    ast.YieldFrom: ("yield from", "Generators/yield from are not supported."),
+    ast.Await: ("await", "Async/await expressions are not supported."),
+    ast.Starred: ("starred expression *args", "Starred unpacking expressions are not supported."),
+    ast.JoinedStr: ("f-string", "f-strings with interpolated expressions are not supported; use string concatenation instead."),
+    ast.FormattedValue: ("f-string expression", "f-string expressions are not supported; use string concatenation instead."),
+}
+
+# Register Python-version-dependent unsupported expressions safely
+_NAMEDEXPR = getattr(ast, "NamedExpr", None)
+if _NAMEDEXPR is not None:
+    _UNSUPPORTED_EXPRESSIONS[_NAMEDEXPR] = ("walrus operator :=", "Assignment expressions (:=) are not supported.")
+
+
 class Parser:
     """
     Parses Python source code into Axiom Zero's NormalizedIR.
@@ -107,7 +162,8 @@ class Parser:
         ir = parser.parse_source("def foo(x): return x + 1", module_name="example")
     """
 
-    def __init__(self):
+    def __init__(self, config: Optional[ParserConfig] = None):
+        self._config = config or ParserConfig()
         self._current_source_path: Optional[str] = None
 
     def parse(self, source_path: str) -> NormalizedIR:
@@ -144,14 +200,35 @@ class Parser:
         except SyntaxError as e:
             raise ParserError(f"Syntax error in {module_name}: {e}")
 
-        ir = NormalizedIR(
+        self._current_ir = NormalizedIR(
             module_name=module_name,
             source_path=self._current_source_path,
             python_version=f"{sys.version_info.major}.{sys.version_info.minor}",
         )
 
-        self._walk_module(tree, ir)
-        return ir
+        self._walk_module(tree, self._current_ir)
+        return self._current_ir
+
+    def _warn_unsupported(self, node: ast.AST, construct: str, message: str):
+        """
+        Record a warning (or raise an error in strict mode) for an unsupported construct.
+        
+        Args:
+            node: The AST node that triggered the warning
+            construct: Name of the unsupported construct
+            message: Explanation of why it's unsupported
+            
+        Raises:
+            ParserError: If strict_mode is enabled
+        """
+        location = self._make_loc(node)
+        warning = ParserWarning(construct=construct, location=location, message=message)
+
+        if self._config.strict_mode:
+            raise ParserError(str(warning))
+
+        if self._config.collect_warnings:
+            self._current_ir.warnings.append(warning)
 
     def _make_loc(self, node: ast.AST) -> str:
         """Create a source location string from an AST node."""
@@ -240,6 +317,14 @@ class Parser:
                 nested_func = self._parse_function(stmt)
                 if nested_func:
                     nested.append(nested_func)
+
+        # Check for recursion (self-recursive calls — termination can't be verified)
+        if self._ast_has_recursive_call(node.body, node.name):
+            self._warn_unsupported(
+                node,
+                "recursion",
+                f"Recursive call to '{node.name}' — termination cannot be verified automatically.",
+            )
 
         return FunctionIR(
             signature=sig,
@@ -340,10 +425,21 @@ class Parser:
             # Handled at module level, skip here
             return None
 
-        if isinstance(node, ast.ClassDef):
-            return None
-
         if isinstance(node, ast.Assign):
+            # Check for mutable state via attribute/subscript assignment
+            for target in node.targets:
+                if isinstance(target, ast.Attribute):
+                    self._warn_unsupported(
+                        target,
+                        "attribute assignment",
+                        "Assigning to an object attribute (obj.attr = val) mutates state and is not supported. Use a pure functional pattern.",
+                    )
+                if isinstance(target, ast.Subscript):
+                    self._warn_unsupported(
+                        target,
+                        "subscript assignment",
+                        "Assigning to a subscript (list[i] = val) mutates state and is not supported. Use a pure functional pattern.",
+                    )
             # Multiple targets: a = b = expr
             if len(node.targets) == 1:
                 target = self._parse_expression(node.targets[0])
@@ -403,6 +499,16 @@ class Parser:
             return StatementIR(stmt_type="for", iter_var=var, iterable=iterable, body=body, orelse=orelse, source_loc=loc)
 
         if isinstance(node, ast.While):
+            # Check for potentially non-terminating loop (while True with no break)
+            is_while_true = (
+                isinstance(node.test, ast.Constant) and node.test.value is True
+            )
+            if is_while_true and not self._ast_has_break(node.body):
+                self._warn_unsupported(
+                    node,
+                    "infinite loop",
+                    "while True with no break — loop termination cannot be verified.",
+                )
             condition = self._parse_expression(node.test)
             body = [s for s in (self._parse_statement(s) for s in node.body) if s is not None]
             orelse = [s for s in (self._parse_statement(s) for s in node.orelse) if s is not None]
@@ -432,6 +538,30 @@ class Parser:
                 items.append(self._parse_expression(item.context_expr))
             body = [s for s in (self._parse_statement(s) for s in node.body) if s is not None]
             return StatementIR(stmt_type="with", expression=items[0] if items else None, body=body, source_loc=loc)
+
+        # ── Detect known unsupported statements ───────────────────────────
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            self._warn_unsupported(
+                node,
+                "import",
+                "Import statements inside functions are not supported. Move them to module level.",
+            )
+            return None
+
+        if isinstance(node, ast.ClassDef):
+            self._warn_unsupported(
+                node,
+                "class",
+                "Nested class definitions inside functions are not supported.",
+            )
+            return None
+
+        # Check the unsupported statement registry
+        unsupported = _UNSUPPORTED_STATEMENTS.get(type(node))
+        if unsupported:
+            construct, message = unsupported
+            self._warn_unsupported(node, construct, message)
+            return None
 
         return None
 
@@ -523,6 +653,14 @@ class Parser:
             if tensor_kind is not None:
                 return ExpressionIR.tensor_op(tensor_kind, args, kwargs, loc)
 
+            # Check if this is a mutating method call
+            if isinstance(node.func, ast.Attribute) and node.func.attr in _MUTATING_METHODS:
+                self._warn_unsupported(
+                    node,
+                    f"mutating method '{node.func.attr}'",
+                    f"Method '{node.func.attr}()' mutates the object in-place, which is not supported. Use a pure functional pattern instead.",
+                )
+
             return ExpressionIR.call(func, args, kwargs, loc)
 
         if isinstance(node, ast.Attribute):
@@ -580,6 +718,13 @@ class Parser:
             elements = [self._parse_expression(e) for e in node.elts]
             return ExpressionIR(expr_type="set", elements=[e for e in elements if e is not None], source_loc=loc)
 
+        # ── Detect known unsupported expressions ──────────────────────────
+        unsupported = _UNSUPPORTED_EXPRESSIONS.get(type(node))
+        if unsupported:
+            construct, message = unsupported
+            self._warn_unsupported(node, construct, message)
+            return None
+
         return None
 
     # ─── Tensor Operation Detection ───────────────────────────────────────
@@ -627,6 +772,27 @@ class Parser:
             return NN_MODULE_OPS[parts[-1]]
 
         return None
+
+    # ─── Helpers for termination / mutation detection ────────────────────
+
+    def _ast_has_break(self, body: List[ast.stmt]) -> bool:
+        """Check if a list of AST statements contains a break statement."""
+        for stmt in body:
+            for child in ast.walk(stmt):
+                if isinstance(child, ast.Break):
+                    return True
+        return False
+
+    def _ast_has_recursive_call(self, body: List[ast.stmt], func_name: str) -> bool:
+        """Check if a function body contains a direct recursive call to itself."""
+        for stmt in body:
+            for child in ast.walk(stmt):
+                if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
+                    if child.func.id == func_name:
+                        return True
+        return False
+
+    # ─── Expression to Name ───────────────────────────────────────────────
 
     def _expr_to_name(self, node: ast.expr) -> str:
         """Convert an expression node to a string name."""

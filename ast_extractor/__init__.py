@@ -9,7 +9,15 @@ Public API:
     - parse_source(source, name) -> NormalizedIR: Parse a source string
     - normalize(ir) -> NormalizedIR: Normalize/desugar the IR
     - to_ssa(ir) -> NormalizedIR: Convert to SSA form
+
+Parsing can be configured with ParserConfig:
+    - strict_mode: If True, unsupported constructs raise ParserError
+    - collect_warnings: If True, warnings are collected in ir.warnings
 """
+
+from __future__ import annotations
+
+from typing import Optional
 
 from .ir import (
     NormalizedIR,
@@ -23,6 +31,8 @@ from .ir import (
     ExpressionIR,
     TypeAnnotation,
     TensorOpKind,
+    ParserWarning,
+    ParserConfig,
 )
 from .parser import Parser, ParserError
 from .normalizer import Normalizer, SSAConverter
@@ -40,6 +50,8 @@ __all__ = [
     "ExpressionIR",
     "TypeAnnotation",
     "TensorOpKind",
+    "ParserWarning",
+    "ParserConfig",
     # Parser
     "Parser",
     "ParserError",
@@ -54,15 +66,32 @@ __all__ = [
 ]
 
 
-def parse_file(path: str) -> NormalizedIR:
-    """Parse a Python source file into NormalizedIR."""
-    parser = Parser()
+def parse_file(path: str, config: Optional[ParserConfig] = None) -> NormalizedIR:
+    """Parse a Python source file into NormalizedIR.
+
+    Args:
+        path: Path to the .py file
+        config: Optional ParserConfig to control strict mode and warning collection
+
+    Returns:
+        NormalizedIR representation of the module
+    """
+    parser = Parser(config=config)
     return parser.parse(path)
 
 
-def parse_source(source: str, module_name: str = "<string>") -> NormalizedIR:
-    """Parse Python source code string into NormalizedIR."""
-    parser = Parser()
+def parse_source(source: str, module_name: str = "<string>", config: Optional[ParserConfig] = None) -> NormalizedIR:
+    """Parse Python source code string into NormalizedIR.
+
+    Args:
+        source: Python source code as a string
+        module_name: Name for the module (used in error messages)
+        config: Optional ParserConfig to control strict mode and warning collection
+
+    Returns:
+        NormalizedIR representation
+    """
+    parser = Parser(config=config)
     return parser.parse_source(source, module_name)
 
 

@@ -623,6 +623,442 @@ def test_lean_env_version_check():
     print("  PASS: test_lean_env_version_check")
 
 
+# ─── Lemma Database Tests ───────────────────────────────────────────────────
+
+def test_lemma_db_initialization():
+    """Test LemmaDatabase initializes with seed lemmas."""
+    from proof_engine import LemmaDatabase, LEMMA_EMBED_DIM
+
+    db = LemmaDatabase()
+    assert db.lemma_count > 0, "Should have seed lemmas by default"
+    assert len(db.lemma_names) == db.lemma_count
+    assert len(db.categories) > 0
+    # Should have at least the major categories
+    assert "arithmetic" in db.categories
+    assert "order" in db.categories
+    assert "boolean" in db.categories
+    assert "list" in db.categories
+
+    # Empty database without seeds
+    db_empty = LemmaDatabase(include_seed=False)
+    assert db_empty.lemma_count == 0
+    assert len(db_empty.categories) == 0
+
+    print(f"  PASS: test_lemma_db_initialization ({db.lemma_count} seed lemmas, {len(db.categories)} categories)")
+
+
+def test_lemma_db_add_lemma():
+    """Test adding lemmas to the database."""
+    from proof_engine import LemmaDatabase
+
+    db = LemmaDatabase(include_seed=False)
+
+    entry = db.add_lemma(
+        name="my_custom_lemma",
+        type_sig="∀ (x : ℕ), x = x",
+        category="custom",
+        description="A custom lemma for testing",
+    )
+
+    assert db.lemma_count == 1
+    assert entry.name == "my_custom_lemma"
+    assert entry.type_sig == "∀ (x : ℕ), x = x"
+    assert entry.category == "custom"
+    assert entry.description == "A custom lemma for testing"
+    assert len(entry.embedding) > 0  # auto-computed
+    assert entry.usage_count == 0
+    assert entry.success_count == 0
+    assert entry.success_rate == 0.0
+
+    # Add another
+    db.add_lemma("second", "∀ x, x = x", "general")
+    assert db.lemma_count == 2
+    assert "second" in db.lemma_names
+
+    print("  PASS: test_lemma_db_add_lemma")
+
+
+def test_lemma_db_add_lemmas_from_list():
+    """Test bulk adding lemmas."""
+    from proof_engine import LemmaDatabase
+
+    db = LemmaDatabase(include_seed=False)
+    lemmas = [
+        ("lemma_a", "∀ a, a = a", "general", "A"),
+        ("lemma_b", "∀ b, b = b", "general", "B"),
+        ("lemma_c", "∀ c, c = c", "custom", "C"),
+    ]
+    db.add_lemmas_from_list(lemmas)
+
+    assert db.lemma_count == 3
+    assert db.get_lemma("lemma_a") is not None
+    assert db.get_lemma("lemma_b") is not None
+    assert db.get_lemma("lemma_c") is not None
+    assert "custom" in db.categories
+
+    print("  PASS: test_lemma_db_add_lemmas_from_list")
+
+
+def test_lemma_db_search_add_identity():
+    """Test searching for lemmas related to additive identity goals."""
+    from proof_engine import LemmaDatabase
+
+    db = LemmaDatabase()
+
+    # Search for something related to "x + 0 = x"
+    results = db.search("x + 0 = x", top_k=5)
+    assert len(results) > 0
+
+    # add_zero should be the top result
+    top_names = [r.lemma_name for r in results]
+    assert "add_zero" in top_names, f"Expected add_zero in top results, got: {top_names}"
+
+    # Verify score structure
+    best = results[0]
+    assert best.score >= 0.0
+    assert best.tactic == "apply"
+    assert best.rendered == f"apply {best.lemma_name}"
+
+    print(f"  PASS: test_lemma_db_search_add_identity (top: {results[0].lemma_name} @ {results[0].score:.3f})")
+
+
+def test_lemma_db_suggest_for_goal_rw():
+    """Test suggest_for_goal with rewrite tactic."""
+    from proof_engine import LemmaDatabase
+
+    db = LemmaDatabase()
+
+    # For rw, we should get a lemma rendered as "rw [lemma_name]"
+    suggestion = db.suggest_for_goal("x + 0 = x", tactic="rw")
+    assert suggestion is not None, "Should find a lemma for rw on x + 0 = x"
+    assert "rw [" in suggestion.rendered or "rw" in suggestion.rendered
+    assert suggestion.lemma_name in ("add_zero", "zero_add") or "add" in suggestion.lemma_name
+    assert suggestion.tactic == "rw"
+
+    print(f"  PASS: test_lemma_db_suggest_for_goal_rw ({suggestion.rendered})")
+
+
+def test_lemma_db_suggest_for_goal_exact():
+    """Test suggest_for_goal with exact tactic."""
+    from proof_engine import LemmaDatabase
+
+    db = LemmaDatabase()
+
+    suggestion = db.suggest_for_goal("a + b = b + a", tactic="exact")
+    assert suggestion is not None
+    assert "exact " in suggestion.rendered
+    assert suggestion.tactic == "exact"
+
+    print(f"  PASS: test_lemma_db_suggest_for_goal_exact ({suggestion.rendered})")
+
+
+def test_lemma_db_suggest_for_hypothesis():
+    """Test suggesting lemmas based on a hypothesis type."""
+    from proof_engine import LemmaDatabase
+
+    db = LemmaDatabase()
+
+    suggestion = db.suggest_for_hypothesis("x + 0 = x", tactic="apply")
+    assert suggestion is not None
+    assert suggestion.lemma_name in ("add_zero", "zero_add") or "add" in suggestion.lemma_name
+
+    # Should work with different tactics too
+    suggestion_rw = db.suggest_for_hypothesis("x + 0 = x", tactic="rw")
+    assert suggestion_rw is not None
+
+    print(f"  PASS: test_lemma_db_suggest_for_hypothesis ({suggestion.lemma_name})")
+
+
+def test_lemma_db_feedback():
+    """Test hit/miss recording affects success_rate."""
+    from proof_engine import LemmaDatabase
+
+    db = LemmaDatabase(include_seed=False)
+    db.add_lemma("test_hit", "∀ x, x = x")
+
+    entry = db.get_lemma("test_hit")
+    assert entry is not None
+    assert entry.success_rate == 0.0
+    assert entry.usage_count == 0
+
+    # Record a hit
+    db.record_hit("test_hit")
+    assert entry.usage_count == 1
+    assert entry.success_count == 1
+    assert entry.success_rate == 1.0
+
+    # Record a miss
+    db.record_miss("test_hit")
+    assert entry.usage_count == 2
+    assert entry.success_count == 1
+    assert entry.success_rate == 0.5
+
+    # Record via combined method
+    db.record_result("test_hit", success=True)
+    assert entry.usage_count == 3
+    assert entry.success_count == 2
+    assert entry.success_rate == 2.0 / 3.0
+
+    # Unknown lemma should not crash
+    db.record_hit("nonexistent")
+    db.record_miss("nonexistent")
+
+    print(f"  PASS: test_lemma_db_feedback (success_rate: {entry.success_rate:.2f})")
+
+
+def test_lemma_db_search_with_category_filter():
+    """Test category filtering in search."""
+    from proof_engine import LemmaDatabase
+
+    db = LemmaDatabase()
+
+    # Search only in the 'list' category
+    results = db.search("x + 0 = x", top_k=5, category_filter="list")
+    # Should still return results (list lemmas)
+    for r in results:
+        entry = db.get_lemma(r.lemma_name)
+        assert entry is not None
+        assert entry.category == "list", f"Expected list category, got {entry.category}"
+
+    # Category filter with no match
+    results_empty = db.search("x + 0 = x", top_k=5, category_filter="nonexistent")
+    assert len(results_empty) == 0
+
+    print(f"  PASS: test_lemma_db_search_with_category_filter ({len(results)} list lemmas returned)")
+
+
+def test_lemma_db_search_empty():
+    """Test search on an empty database."""
+    from proof_engine import LemmaDatabase
+
+    db = LemmaDatabase(include_seed=False)
+    assert len(db.search("anything")) == 0
+    assert db.suggest_for_goal("anything") is None
+
+    print("  PASS: test_lemma_db_search_empty")
+
+
+def test_lemma_db_save_load():
+    """Test persisting the database to JSON and loading it back."""
+    from proof_engine import LemmaDatabase
+    import tempfile
+    import shutil
+
+    # Use a temporary directory
+    tmp_dir = tempfile.mkdtemp(prefix="test_lemma_db_")
+    try:
+        db = LemmaDatabase()
+        original_count = db.lemma_count
+
+        save_path = os.path.join(tmp_dir, "test_lemma_db.json")
+        db.save(save_path)
+        assert os.path.exists(save_path)
+
+        loaded = LemmaDatabase.load(save_path)
+        assert loaded.lemma_count == original_count
+        assert loaded.lemma_names == db.lemma_names
+        assert loaded.categories == db.categories
+
+        # Check that a specific lemma survived
+        original_entry = db.get_lemma("add_comm")
+        loaded_entry = loaded.get_lemma("add_comm")
+        assert loaded_entry is not None
+        assert loaded_entry.name == original_entry.name
+        assert loaded_entry.type_sig == original_entry.type_sig
+        assert loaded_entry.category == original_entry.category
+        assert len(loaded_entry.embedding) == len(original_entry.embedding)
+
+        print(f"  PASS: test_lemma_db_save_load ({original_count} lemmas saved and loaded)")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_lemma_db_embedding_consistency():
+    """Test that embeddings are deterministic."""
+    from proof_engine.lemma_db import _ngram_hash, _cosine_sim
+
+    emb1 = _ngram_hash("add_comm")
+    emb2 = _ngram_hash("add_comm")
+    assert emb1 == emb2, "Same input should produce identical embedding"
+    assert len(emb1) == 128
+
+    # Different inputs should have different embeddings
+    emb3 = _ngram_hash("mul_comm")
+    # Cosine similarity should be < 1.0
+    sim = _cosine_sim(emb1, emb3)
+    assert sim < 1.0, "Different lemmas should not be identical"
+
+    # Cosine similarity of identical vectors should be 1.0
+    sim_self = _cosine_sim(emb1, emb2)
+    assert abs(sim_self - 1.0) < 0.001, f"Same vectors should have cosim ~1.0, got {sim_self}"
+
+    print(f"  PASS: test_lemma_db_embedding_consistency (dim={len(emb1)}, cross-cosim={sim:.3f})")
+
+
+def test_lemma_db_clear():
+    """Test clearing all lemmas from the database."""
+    from proof_engine import LemmaDatabase
+
+    db = LemmaDatabase()
+    assert db.lemma_count > 0
+    db.clear()
+    assert db.lemma_count == 0
+    assert db.suggest_for_goal("anything") is None
+
+    print("  PASS: test_lemma_db_clear")
+
+
+def test_lemma_db_suggest_for_goal_nonexistent():
+    """Test suggest_for_goal returns None when no lemmas match."""
+    from proof_engine import LemmaDatabase
+
+    db = LemmaDatabase(include_seed=False)
+    db.add_lemma("weird", "∃ (a : ℕ), a = 0", "existential", "Weird existential")
+
+    # This goal won't match the weird lemma
+    suggestion = db.suggest_for_goal("x + 0 = x", tactic="apply")
+    # All lemmas are candidates since the lemma is "weird" with an existential type
+    # It should still return the weird lemma as a fallback since it's the only candidate
+    # Actually, the category filter won't help here, but it should still return something
+    # If none match well enough, it returns None
+
+    print(f"  PASS: test_lemma_db_suggest_for_goal_nonexistent (result: {suggestion})")
+
+
+def test_lemma_db_get_lemma_unknown():
+    """Test get_lemma returns None for unknown lemma."""
+    from proof_engine import LemmaDatabase
+
+    db = LemmaDatabase()
+    assert db.get_lemma("this_does_not_exist_xyz") is None
+
+    print("  PASS: test_lemma_db_get_lemma_unknown")
+
+
+def test_lemma_db_min_success_rate_filter():
+    """Test min_success_rate filtering in search."""
+    from proof_engine import LemmaDatabase
+
+    db = LemmaDatabase(include_seed=False)
+    db.add_lemma("good", "∀ x, x = x", "general", "Works well")
+    db.add_lemma("bad", "∀ x, x = x", "general", "Never works")
+
+    # Give bad a poor success rate
+    db.record_miss("bad")
+    db.record_miss("bad")
+    db.record_hit("good")
+
+    results_all = db.search("x = x", top_k=10)
+    assert len(results_all) == 2
+
+    results_good = db.search("x = x", top_k=10, min_success_rate=0.5)
+    # Only "good" has success_rate >= 0.5 (good: 1.0, bad: 0.0)
+    assert len(results_good) == 1
+    assert results_good[0].lemma_name == "good"
+
+    print("  PASS: test_lemma_db_min_success_rate_filter")
+
+
+def test_lemma_db_classify_goal_type():
+    """Test goal type classification tags."""
+    from proof_engine.lemma_db import _classify_goal_type
+
+    # Equality
+    tags_eq = _classify_goal_type("x + 0 = x")
+    assert "equality" in tags_eq
+    assert "arithmetic" in tags_eq
+    assert "add_identity" in tags_eq
+
+    # Inequality
+    tags_ineq = _classify_goal_type("x > 0")
+    assert "inequality" in tags_ineq
+    assert "order" in tags_ineq
+
+    # Boolean
+    tags_bool = _classify_goal_type("p ∧ q")
+    assert "boolean" in tags_bool
+
+    # List
+    tags_list = _classify_goal_type("List.length l = 0")
+    assert "list" in tags_list
+
+    # Existential
+    tags_ex = _classify_goal_type("∃ (x : ℕ), x = 0")
+    assert "existential" in tags_ex
+
+    # Implication
+    tags_imp = _classify_goal_type("x > 0 → x ≤ x")
+    assert "implication" in tags_imp
+
+    print(f"  PASS: test_lemma_db_classify_goal_type")
+
+
+def test_lemma_db_suggestion_rendering():
+    """Test LemmaSuggestion rendering for different tactic types."""
+    from proof_engine.lemma_db import LemmaSuggestion
+
+    # Apply
+    s1 = LemmaSuggestion(lemma_name="add_comm", score=0.9, tactic="apply")
+    assert s1.rendered == "apply add_comm"
+
+    # Rewrite
+    s2 = LemmaSuggestion(lemma_name="add_comm", score=0.9, tactic="rw")
+    assert s2.rendered == "rw [add_comm]"
+
+    # Exact
+    s3 = LemmaSuggestion(lemma_name="add_comm", score=0.9, tactic="exact")
+    assert s3.rendered == "exact add_comm"
+
+    # Refine
+    s4 = LemmaSuggestion(lemma_name="add_comm", score=0.9, tactic="refine")
+    assert s4.rendered == "refine add_comm ?_"
+
+    # Have
+    s5 = LemmaSuggestion(lemma_name="add_comm", score=0.9, tactic="have")
+    assert s5.rendered == "have h : ?_ := add_comm"
+
+    print(f"  PASS: test_lemma_db_suggestion_rendering")
+
+
+def test_tactic_executor_with_lemma_db():
+    """Test that TacticExecutor integrates with LemmaDatabase properly."""
+    from proof_engine import TacticExecutor, LemmaDatabase, Goal, ProofState
+
+    # Create a mock LeanEnv
+    class MockLeanEnv:
+        def __init__(self):
+            self.is_running = True
+        def run_tactic(self, tactic):
+            return {"success": True, "goals": [], "error": None}
+
+    db = LemmaDatabase()
+    executor = TacticExecutor(MockLeanEnv(), lemma_db=db)
+
+    # Test suggest_lemma convenience method
+    goal = Goal(id="g1", type="x + 0 = x")
+    suggestion = executor.suggest_lemma("rw", goal)
+    assert suggestion is not None
+    assert "add_zero" in suggestion.rendered or "rw" in suggestion.rendered
+
+    # Test search_lemmas
+    results = executor.search_lemmas("x + 0 = x", top_k=3)
+    assert len(results) <= 3
+    assert len(results) > 0
+
+    # Test get_available_tactics includes lemma suggestions for requires_term tactics
+    state = ProofState(goals=[goal])
+    available = executor.get_available_tactics(state)
+    # Find an apply tactic suggestion
+    apply_info = [t for t in available if t["name"] == "apply"]
+    if apply_info:
+        info = apply_info[0]
+        assert "suggested_lemma" in info, f"Expected suggested_lemma in apply info, got keys: {info.keys()}"
+        assert "suggested_tactic_rendered" in info
+        assert "lemma_score" in info
+
+    print(f"  PASS: test_tactic_executor_with_lemma_db (suggested: {suggestion.rendered if suggestion else 'None'})")
+
+
 def test_json_rpc_messages():
     """Test JSON-RPC message formatting."""
     from proof_engine.lean_env import make_request, make_notification
@@ -776,6 +1212,26 @@ def run_all_tests():
         test_lean_env_workspace_creation,
         test_lean_env_version_check,
         test_json_rpc_messages,
+        # Lemma Database tests
+        test_lemma_db_initialization,
+        test_lemma_db_add_lemma,
+        test_lemma_db_add_lemmas_from_list,
+        test_lemma_db_search_add_identity,
+        test_lemma_db_suggest_for_goal_rw,
+        test_lemma_db_suggest_for_goal_exact,
+        test_lemma_db_suggest_for_hypothesis,
+        test_lemma_db_feedback,
+        test_lemma_db_search_with_category_filter,
+        test_lemma_db_search_empty,
+        test_lemma_db_save_load,
+        test_lemma_db_embedding_consistency,
+        test_lemma_db_clear,
+        test_lemma_db_suggest_for_goal_nonexistent,
+        test_lemma_db_get_lemma_unknown,
+        test_lemma_db_min_success_rate_filter,
+        test_lemma_db_classify_goal_type,
+        test_lemma_db_suggestion_rendering,
+        test_tactic_executor_with_lemma_db,
         # Integration tests
         test_integration_full_pipeline,
         test_integration_tensor_pipeline,

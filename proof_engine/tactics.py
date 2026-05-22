@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from .proof_state import ProofState, Goal, Hypothesis, GoalStatus
+from .lemma_db import LemmaDatabase, LemmaSuggestion
 
 
 class TacticCategory(Enum):
@@ -384,29 +385,32 @@ class TacticExecutor:
         result = executor.apply("simp")
     """
 
-    def __init__(self, lean_env):
+    def __init__(self, lean_env, lemma_db: Optional[LemmaDatabase] = None):
         """
         Initialize the tactic executor.
         
         Args:
             lean_env: An initialized LeanEnv instance
+            lemma_db: Optional LemmaDatabase for filling requires_term tactic holes
         """
         self.lean_env = lean_env
         self.tactic_templates = dict(CORE_TACTICS)
+        self.lemma_db = lemma_db or LemmaDatabase()
 
-    def apply(self, tactic: str, args: Optional[List[str]] = None) -> TacticResult:
+    def apply(self, tactic: str, args: Optional[List[str]] = None, goal: Optional[Goal] = None) -> TacticResult:
         """
         Apply a tactic and return the result.
         
         Args:
             tactic: Tactic name or full tactic string
             args: Arguments for the tactic (used if tactic is a name)
+            goal: Current goal context (used for lemma database lookups)
             
         Returns:
             TacticResult with success status and new goals
         """
         # Resolve tactic to a full Lean 4 command
-        tactic_str = self._resolve_tactic(tactic, args)
+        tactic_str = self._resolve_tactic(tactic, args, goal=goal)
 
         if tactic_str is None:
             return TacticResult(
@@ -440,7 +444,7 @@ class TacticExecutor:
         """
         # Use focus notation: `· tactic` to apply to the first goal
         focused_tactic = f"· {tactic}"
-        return self.apply(focused_tactic, args)
+        return self.apply(focused_tactic, args, goal=goal)
 
     def get_available_tactics(self, state: ProofState) -> List[Dict[str, Any]]:
         """
@@ -486,17 +490,26 @@ class TacticExecutor:
                 ):
                     continue
 
+                # For requires_term tactics, include lemma suggestions from the DB
+                if template.requires_term and template.num_holes == 1:
+                    suggestion = self.lemma_db.suggest_for_goal(goal_type, tactic=name)
+                    if suggestion:
+                        info["suggested_lemma"] = suggestion.lemma_name
+                        info["suggested_tactic_rendered"] = suggestion.rendered
+                        info["lemma_score"] = round(suggestion.score, 3)
+
             available.append(info)
 
         return available
 
-    def _resolve_tactic(self, tactic: str, args: Optional[List[str]] = None) -> Optional[str]:
+    def _resolve_tactic(self, tactic: str, args: Optional[List[str]] = None, goal: Optional[Goal] = None) -> Optional[str]:
         """
         Resolve a tactic name or string to a Lean 4 tactic command.
         
         Args:
             tactic: Tactic name or full tactic string
             args: Arguments for the tactic
+            goal: Current goal (used for lemma database lookups when args are absent)
             
         Returns:
             Lean 4 tactic string, or None if unknown
@@ -515,6 +528,15 @@ class TacticExecutor:
             return template.to_lean(*args)
         elif template.num_holes == 0:
             return template.to_lean()
+        elif goal and template.requires_term and self.lemma_db:
+            # Try to fill from lemma database
+            suggestion = self.lemma_db.suggest_for_goal(goal.type, tactic=tactic)
+            if suggestion:
+                return suggestion.rendered
+            else:
+                # Fallback: still use placeholder, but mark as unknown lemma
+                placeholders = [f"_{i}" for i in range(template.num_holes)]
+                return template.to_lean(*placeholders)
         else:
             # Use placeholders for unfilled holes
             placeholders = [f"_{i}" for i in range(template.num_holes)]
@@ -561,6 +583,32 @@ class TacticExecutor:
             new_goals=new_goals if success else [],
             error=error,
         )
+
+    def suggest_lemma(self, tactic_name: str, goal: Goal) -> Optional[LemmaSuggestion]:
+        """
+        Get a lemma suggestion for a tactic applied to a goal.
+        
+        Args:
+            tactic_name: The tactic to use (e.g., "apply", "rw", "exact")
+            goal: The goal to prove
+            
+        Returns:
+            LemmaSuggestion with the rendered tactic string, or None if no match
+        """
+        return self.lemma_db.suggest_for_goal(goal.type, tactic=tactic_name)
+
+    def search_lemmas(self, goal_type: str, top_k: int = 5) -> List[LemmaSuggestion]:
+        """
+        Search the lemma database for lemmas relevant to a goal type.
+        
+        Args:
+            goal_type: The goal type string
+            top_k: Maximum number of results
+            
+        Returns:
+            List of LemmaSuggestion ordered by relevance
+        """
+        return self.lemma_db.search(goal_type, top_k=top_k)
 
     def register_custom_tactic(self, name: str, template: TacticTemplate):
         """

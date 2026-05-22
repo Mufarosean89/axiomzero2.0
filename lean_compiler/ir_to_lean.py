@@ -14,7 +14,7 @@ Lean 4 output is always produced.
 
 Key design points
 -----------------
-- Python ``int`` → Lean ``ℕ`` (non‑negative naturals).
+- Python ``int`` → Lean ``ℤ`` (signed integers).
 - Python ``bool`` → Lean ``Bool``.
 - Python ``List[T]`` → Lean ``List T``.
 - Python binary operators are mapped to their Lean equivalents (``+``, ``-``,
@@ -55,7 +55,7 @@ from proof_engine.builder import obligation_to_lean_theorem
 # ── Python → Lean type mapping ──────────────────────────────────────────────
 
 _PY_TYPE_TO_LEAN: Dict[str, str] = {
-    "int": "ℕ",
+    "int": "ℤ",
     "Int": "ℤ",
     "float": "ℝ",
     "Float": "ℝ",
@@ -474,7 +474,7 @@ class IRToLeanCompiler:
             py_type: A Python type name (e.g., "int", "List[int]", "Optional[str]").
 
         Returns:
-            Lean 4 type string (e.g., "ℕ", "List ℕ", "Option String").
+            Lean 4 type string (e.g., "ℤ", "List ℤ", "Option String").
         """
         py_type = py_type.strip()
 

@@ -13,6 +13,39 @@ from enum import Enum, auto
 from typing import Any, Dict, List, Optional, Set, Union
 
 
+# ─── Parser Configuration & Warnings ─────────────────────────────────────────
+
+@dataclass
+class ParserWarning:
+    """
+    A warning produced when an unsupported Python construct is encountered during parsing.
+
+    Attributes:
+        construct: Name of the unsupported construct (e.g., "try/except", "yield", "match/case")
+        location: Source location string (file:line)
+        message: Human-readable explanation of why it's unsupported
+    """
+    construct: str
+    location: str
+    message: str
+
+    def __str__(self) -> str:
+        return f"{self.location}: Unsupported construct '{self.construct}' — {self.message}"
+
+
+@dataclass
+class ParserConfig:
+    """
+    Configuration for the Python source parser.
+
+    Attributes:
+        strict_mode: If True, unsupported constructs raise ParserError instead of warnings.
+        collect_warnings: If True, warnings are collected and returned with the IR.
+    """
+    strict_mode: bool = False
+    collect_warnings: bool = True
+
+
 # ─── Type Representations ──────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -281,6 +314,7 @@ class NormalizedIR:
     global_statements: List[StatementIR] = field(default_factory=list)
     source_path: Optional[str] = None
     python_version: Optional[str] = None
+    warnings: List[ParserWarning] = field(default_factory=list)
 
     @property
     def all_functions(self) -> List[FunctionIR]:

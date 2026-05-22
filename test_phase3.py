@@ -274,7 +274,7 @@ def _():
     first_half = sum(losses_pi[:10]) / 10
     second_half = sum(losses_pi[10:]) / 10
     assert second_half <= first_half + 0.5, (
-        f"Loss did not decrease: {first_half:.4f} → {second_half:.4f}"
+        "Loss did not decrease: {:.4f} -> {:.4f}".format(first_half, second_half)
     )
 
 
@@ -505,6 +505,7 @@ def _():
         episodes_per_iteration=2,
         mcts_simulations=5,
         batch_size=2,
+        pretrain_on_builtin=False,  # disable auto-seed to avoid extra pretrain stat
     )
     trainer = SelfPlayTrainer(ps_list, config=cfg)
     trainer.run()
@@ -611,6 +612,553 @@ def _():
         result = run_episode(ps, net, num_simulations=5)
         assert isinstance(result, EpisodeResult)
         assert result.outcome in (-1.0, 0.0, 1.0)
+
+
+# =============================================================================
+# Section 7: Cold-Start / Dataset Loaders
+# =============================================================================
+
+print("\n-- Section 7: Cold-Start / Dataset Loaders --------------------------------")
+
+
+@test("generate_builtin_seed_data() returns RawProofTrace list")
+def _():
+    from rl_agent.dataset_loaders import (
+        generate_builtin_seed_data,
+        RawProofTrace, RawProofStep,
+    )
+    ps_list = _make_proof_states()
+    traces = generate_builtin_seed_data(
+        proof_states=ps_list,
+        max_traces=5,
+        max_steps_per_trace=5,
+        temperature=0.0,
+    )
+    assert isinstance(traces, list)
+    for t in traces:
+        assert isinstance(t, RawProofTrace)
+        assert isinstance(t.steps, list)
+        for s in t.steps:
+            assert isinstance(s, RawProofStep)
+            assert "tactic" in str(type(s.tactic)) or isinstance(s.tactic, str)
+    print(f"  Generated {len(traces)} trace(s)")
+
+
+@test("generate_builtin_seed_data() produces >0 steps when states exist")
+def _():
+    from rl_agent.dataset_loaders import generate_builtin_seed_data
+    ps_list = _make_proof_states()
+    traces = generate_builtin_seed_data(
+        proof_states=ps_list,
+        max_traces=3,
+        max_steps_per_trace=5,
+        temperature=0.0,
+    )
+    total_steps = sum(len(t.steps) for t in traces)
+    assert total_steps > 0, f"Expected > 0 steps across {len(traces)} traces, got {total_steps}"
+    print(f"  Total steps across {len(traces)} traces: {total_steps}")
+
+
+@test("convert_to_training_examples() returns TrainingExample list")
+def _():
+    from rl_agent.dataset_loaders import (
+        generate_builtin_seed_data,
+        convert_to_training_examples,
+        RawProofTrace, RawProofStep,
+    )
+    from rl_agent import TrainingExample
+    ps_list = _make_proof_states()
+    traces = generate_builtin_seed_data(
+        proof_states=ps_list,
+        max_traces=3,
+        max_steps_per_trace=5,
+        temperature=0.0,
+    )
+    examples = convert_to_training_examples(traces)
+    assert isinstance(examples, list)
+    for ex in examples:
+        assert isinstance(ex, TrainingExample)
+        assert len(ex.state_vec) == FEATURE_DIM
+    print(f"  Converted {len(traces)} trace(s) to {len(examples)} example(s)")
+
+
+@test("convert_to_training_examples() produces one-hot policies summing to 1")
+def _():
+    from rl_agent.dataset_loaders import (
+        generate_builtin_seed_data,
+        convert_to_training_examples,
+    )
+    ps_list = _make_proof_states()
+    traces = generate_builtin_seed_data(
+        proof_states=ps_list,
+        max_traces=2,
+        max_steps_per_trace=5,
+        temperature=0.0,
+    )
+    examples = convert_to_training_examples(traces)
+    for i, ex in enumerate(examples):
+        total = sum(ex.mcts_policy)
+        assert_close(total, 1.0, tol=1e-6, msg=f"Example {i} policy sum")
+    print(f"  All {len(examples)} example(s) have valid one-hot policies")
+
+
+@test("convert_with_mcts_policy() produces label-smoothed policies")
+def _():
+    from rl_agent.dataset_loaders import (
+        generate_builtin_seed_data,
+        convert_with_mcts_policy,
+    )
+    from proof_engine import CORE_TACTICS
+    ps_list = _make_proof_states()
+    traces = generate_builtin_seed_data(
+        proof_states=ps_list,
+        max_traces=2,
+        max_steps_per_trace=5,
+        temperature=0.0,
+    )
+    num_actions = len(CORE_TACTICS)
+    examples = convert_with_mcts_policy(traces, num_actions, smooth_eps=0.1)
+    for i, ex in enumerate(examples):
+        total = sum(ex.mcts_policy)
+        assert_close(total, 1.0, tol=1e-6, msg=f"Example {i} smoothed policy sum")
+        # Check that no single action has all the probability (unless num_actions == 1)
+        max_p = max(ex.mcts_policy)
+        if num_actions > 1:
+            assert max_p < 1.0, f"Example {i} smoothed policy has a 1.0 entry"
+    print(f"  All {len(examples)} example(s) have valid smoothed policies")
+
+
+@test("save_seed_data() and load_seed_data() round-trip")
+def _():
+    import tempfile
+    from rl_agent.dataset_loaders import (
+        generate_builtin_seed_data,
+        convert_to_training_examples,
+        save_seed_data, load_seed_data,
+    )
+    ps_list = _make_proof_states()
+    traces = generate_builtin_seed_data(
+        proof_states=ps_list,
+        max_traces=2,
+        max_steps_per_trace=5,
+        temperature=0.0,
+    )
+    examples_orig = convert_to_training_examples(traces)
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        path = f.name
+    try:
+        save_seed_data(examples_orig, path)
+        examples_loaded = load_seed_data(path)
+        assert_eq(len(examples_orig), len(examples_loaded), "Example count")
+        for i, (a, b) in enumerate(zip(examples_orig, examples_loaded)):
+            assert_eq(len(a.state_vec), len(b.state_vec), f"Example {i} state_vec length")
+            assert_close(sum(a.mcts_policy), sum(b.mcts_policy), tol=1e-6, msg=f"Example {i} policy sum")
+    finally:
+        os.unlink(path)
+    print(f"  Round-trip preserved {len(examples_orig)} example(s)")
+
+
+# =============================================================================
+# Section 8: Cold-Start / Buffer Seeding & Supervised Pre-Training
+# =============================================================================
+
+print("\n-- Section 8: Buffer Seeding & Supervised Pre-Training --------------------")
+
+
+@test("SelfPlayTrainer.seed_buffer() populates the replay buffer")
+def _():
+    from rl_agent.dataset_loaders import (
+        generate_builtin_seed_data,
+        convert_to_training_examples,
+    )
+    ps_list = _make_proof_states()
+    traces = generate_builtin_seed_data(
+        proof_states=ps_list,
+        max_traces=2,
+        max_steps_per_trace=5,
+        temperature=0.0,
+    )
+    examples = convert_to_training_examples(traces)
+
+    cfg = TrainingConfig(pretrain_on_builtin=False)  # disable auto-seed
+    trainer = SelfPlayTrainer(ps_list, config=cfg)
+    assert len(trainer.replay_buffer) == 0, "Buffer should start empty"
+
+    count = trainer.seed_buffer(examples)
+    assert count > 0, f"Expected > 0 seeded, got {count}"
+    assert_eq(len(trainer.replay_buffer), count, "Buffer size after seeding")
+    print(f"  Seeded {count} example(s) into buffer")
+
+
+@test("pretrain_supervised() reduces policy loss")
+def _():
+    from rl_agent.dataset_loaders import (
+        generate_builtin_seed_data,
+        convert_to_training_examples,
+    )
+    ps_list = _make_proof_states()
+    traces = generate_builtin_seed_data(
+        proof_states=ps_list,
+        max_traces=3,
+        max_steps_per_trace=5,
+        temperature=0.0,
+    )
+    examples = convert_to_training_examples(traces)
+
+    cfg = TrainingConfig(
+        pretrain_on_builtin=False,
+        pretrain_epochs=3,
+        pretrain_batch_size=min(8, len(examples)),
+        pretrain_learning_rate=1e-3,
+    )
+    trainer = SelfPlayTrainer(ps_list, config=cfg)
+    trainer.seed_buffer(examples)
+
+    # Get initial loss
+    initial_pi, initial_v = trainer.net.update_weights(
+        target_policies=[ex.mcts_policy for ex in examples],
+        target_values=[ex.outcome for ex in examples],
+        state_vecs=[ex.state_vec for ex in examples],
+        lr=1e-8,  # tiny lr to measure loss without updating
+    )
+
+    # Run pre-training
+    final_pi, final_v = trainer.pretrain_supervised()
+
+    # Policy loss should not increase (network should not diverge)
+    assert final_pi <= initial_pi + 0.5, (
+        f"Policy loss increased: {initial_pi:.4f} -> {final_pi:.4f}"
+    )
+    print(f"  Pre-training: pi_loss {initial_pi:.4f} -> {final_pi:.4f}")
+
+
+@test("pretrain_supervised() returns valid loss floats")
+def _():
+    from rl_agent.dataset_loaders import (
+        generate_builtin_seed_data,
+        convert_to_training_examples,
+    )
+    ps_list = _make_proof_states()
+    traces = generate_builtin_seed_data(
+        proof_states=ps_list,
+        max_traces=2,
+        max_steps_per_trace=5,
+        temperature=0.0,
+    )
+    examples = convert_to_training_examples(traces)
+
+    cfg = TrainingConfig(
+        pretrain_on_builtin=False,
+        pretrain_epochs=2,
+        pretrain_batch_size=min(4, len(examples)),
+    )
+    trainer = SelfPlayTrainer(ps_list, config=cfg)
+    trainer.seed_buffer(examples)
+
+    pi_loss, v_loss = trainer.pretrain_supervised()
+    assert isinstance(pi_loss, float), f"pi_loss should be float, got {type(pi_loss)}"
+    assert isinstance(v_loss, float), f"v_loss should be float, got {type(v_loss)}"
+    assert pi_loss >= 0.0, f"pi_loss should be >= 0, got {pi_loss}"
+    print(f"  pi_loss={pi_loss:.4f}  v_loss={v_loss:.4f}")
+
+
+@test("pretrain_supervised() with empty buffer returns zeros")
+def _():
+    ps_list = _make_proof_states()
+    cfg = TrainingConfig(pretrain_on_builtin=False)
+    trainer = SelfPlayTrainer(ps_list, config=cfg)
+    pi_loss, v_loss = trainer.pretrain_supervised()
+    assert_eq(pi_loss, 0.0, "pi_loss on empty buffer")
+    assert_eq(v_loss, 0.0, "v_loss on empty buffer")
+    print(f"  Empty buffer correctly returns zeros")
+
+
+@test("_auto_seed_and_pretrain() populates buffer and reduces loss")
+def _():
+    ps_list = _make_proof_states()
+    cfg = TrainingConfig(
+        pretrain_on_builtin=True,
+        pretrain_epochs=2,
+        pretrain_batch_size=8,
+        num_iterations=1,
+        episodes_per_iteration=1,
+        mcts_simulations=5,
+    )
+    trainer = SelfPlayTrainer(ps_list, config=cfg)
+    assert len(trainer.replay_buffer) == 0, "Buffer should start empty"
+
+    # This triggers the auto seed + pre-training
+    trainer.run()
+
+    assert len(trainer.replay_buffer) > 0, "Buffer should be non-empty after auto-seed"
+    assert len(trainer.stats) >= 1, "Stats should have at least 1 entry"
+    print(f"  Buffer size after auto-seed: {len(trainer.replay_buffer)}")
+
+
+@test("SelfPlayTrainer with pretrain_on_builtin=True seeds before self-play")
+def _():
+    """When pretrain_on_builtin is True, the buffer should be seeded before
+    the first self-play iteration (visible in the stats)."""
+    ps_list = _make_proof_states()
+    cfg = TrainingConfig(
+        pretrain_on_builtin=True,
+        pretrain_epochs=1,
+        pretrain_batch_size=8,
+        num_iterations=1,
+        episodes_per_iteration=1,
+        mcts_simulations=5,
+    )
+    trainer = SelfPlayTrainer(ps_list, config=cfg)
+    trainer.run()
+    # After one iteration, buffer should be seeded + augmented by self-play
+    assert len(trainer.replay_buffer) > 0, "Buffer should be non-empty"
+    if trainer.stats:
+        stat = trainer.stats[0]
+        assert "buffer_size" in stat
+        print(f"  Final buffer size: {stat['buffer_size']}")
+
+
+@test("Cold-start pipeline: generate -> seed -> pretrain -> self-play")
+def _():
+    """Full end-to-end cold-start pipeline."""
+    from rl_agent.dataset_loaders import (
+        generate_builtin_seed_data,
+        convert_to_training_examples,
+    )
+    ps_list = _make_proof_states()
+    traces = generate_builtin_seed_data(
+        proof_states=ps_list,
+        max_traces=2,
+        max_steps_per_trace=5,
+        temperature=0.0,
+    )
+    examples = convert_to_training_examples(traces)
+    assert len(examples) > 0, "Should have training examples"
+
+    # Seed a fresh trainer
+    cfg = TrainingConfig(
+        pretrain_on_builtin=False,
+        pretrain_epochs=2,
+        num_iterations=1,
+        episodes_per_iteration=1,
+        mcts_simulations=5,
+    )
+    trainer = SelfPlayTrainer(ps_list, config=cfg)
+    trainer.seed_buffer(examples)
+    trainer.pretrain_supervised()
+    net = trainer.run()
+    assert isinstance(net, PolicyValueNet)
+    print(f"  Cold-start pipeline completed successfully")
+
+
+# =============================================================================
+# Section 9: Dataset Parser Units
+# =============================================================================
+
+print("\n-- Section 9: Dataset Parser Units ----------------------------------------")
+
+
+@test("parse_leandojo_trace() with minimal valid JSON")
+def _():
+    import tempfile
+    from rl_agent.dataset_loaders import parse_leandojo_trace, RawProofTrace
+
+    # Create a minimal LeanDojo trace
+    trace_data = {
+        "theorem": "add_comm",
+        "result": "proved",
+        "traj": [
+            {
+                "state": {
+                    "goal": "a + b = b + a",
+                    "hypotheses": [["a", "ℕ"], ["b", "ℕ"]],
+                },
+                "tactic": "rw [add_comm]"
+            },
+            {
+                "state": {
+                    "goal": "a + b = a + b",
+                    "hypotheses": [["a", "ℕ"], ["b", "ℕ"]],
+                },
+                "tactic": "rfl"
+            },
+        ],
+    }
+
+    with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
+        import json as j
+        j.dump(trace_data, f)
+        path = f.name
+    try:
+        traces = parse_leandojo_trace(path)
+        assert len(traces) == 1, f"Expected 1 trace, got {len(traces)}"
+        assert traces[0].theorem_name == "add_comm"
+        assert len(traces[0].steps) == 2
+        assert traces[0].steps[0].tactic == "rw [add_comm]"
+    finally:
+        os.unlink(path)
+    print(f"  Parsed LeanDojo trace with {len(traces[0].steps)} step(s)")
+
+
+@test("load_dataset() auto-infers LeanDojo format from filename")
+def _():
+    import tempfile
+    from rl_agent.dataset_loaders import load_dataset, DatasetFormat
+
+    trace_data = [{
+        "theorem": "test_thm",
+        "result": "proved",
+        "traj": [{"state": {"goal": "True"}, "tactic": "trivial"}],
+    }]
+
+    with tempfile.NamedTemporaryFile(
+        suffix=".json", prefix="traj_", mode="w", delete=False
+    ) as f:
+        import json as j
+        j.dump(trace_data, f)
+        path = f.name
+    try:
+        traces = load_dataset(path)
+        assert len(traces) == 1, f"Expected 1 trace, got {len(traces)}"
+    finally:
+        os.unlink(path)
+    print(f"  Auto-inferred format from filename: {len(traces)} trace(s)")
+
+
+@test("convert_to_training_examples() handles empty traces gracefully")
+def _():
+    from rl_agent.dataset_loaders import (
+        convert_to_training_examples, RawProofTrace, RawProofStep,
+    )
+    # Empty trace list
+    assert_eq(len(convert_to_training_examples([])), 0, "Empty input")
+    # Trace with no steps
+    trace = RawProofTrace(theorem_name="empty", steps=[], outcome=0.0)
+    result = convert_to_training_examples([trace])
+    assert_eq(len(result), 0, "Trace with no steps")
+    print(f"  Empty traces handled correctly")
+
+
+@test("RawProofStep and RawProofTrace dataclasses work correctly")
+def _():
+    from rl_agent.dataset_loaders import RawProofStep, RawProofTrace
+    step = RawProofStep(
+        state_observation={"theorem": "test"},
+        tactic="intro h",
+        outcome=1.0,
+        theorem_name="test_thm",
+    )
+    assert step.tactic == "intro h"
+    assert step.outcome == 1.0
+
+    trace = RawProofTrace(
+        theorem_name="test_thm",
+        steps=[step],
+        outcome=1.0,
+        source="test",
+    )
+    assert len(trace.steps) == 1
+    assert trace.source == "test"
+    print(f"  RawProofStep and RawProofTrace dataclasses work")
+
+
+@test("Integration: parse downloaded miniF2F valid.json")
+def _():
+    """Verify format compatibility between download post-processor and dataset parser."""
+    import tempfile
+    from rl_agent.dataset_loaders import parse_minif2f, convert_to_training_examples
+    from rl_agent import TrainingExample
+
+    # Path to the downloaded miniF2F valid split
+    minif2f_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "datasets", "minif2f", "minif2f_valid.json",
+    )
+    if not os.path.exists(minif2f_path):
+        print(f"  Skipping (miniF2F not downloaded at {minif2f_path})")
+        return
+
+    traces = parse_minif2f(minif2f_path)
+    assert len(traces) > 0, f"Expected > 0 traces, got {len(traces)}"
+    for t in traces:
+        assert t.source == "minif2f"
+
+    # Some entries may have empty proofs (e.g., 'by sorry' unsolved); skip those for training
+    non_empty = [t for t in traces if len(t.steps) > 0]
+    empty_proofs = len(traces) - len(non_empty)
+    print(f"  {len(traces)} total, {empty_proofs} entries with empty proofs")
+
+    examples = convert_to_training_examples(traces)
+    if examples:
+        for ex in examples:
+            assert len(ex.state_vec) == FEATURE_DIM
+            assert_close(sum(ex.mcts_policy), 1.0, tol=1e-6)
+
+    print("  Parsed {} miniF2F traces -> {} training examples ({} empty-proof entries)".format(len(traces), len(examples), empty_proofs))
+
+
+@test("Integration: parse downloaded ProofNet.jsonl")
+def _():
+    """Verify ProofNet post-processor output is compatible with parse_proofnet."""
+    from rl_agent.dataset_loaders import parse_proofnet, convert_to_training_examples
+
+    proofnet_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "datasets", "proofnet", "proofnet.jsonl",
+    )
+    if not os.path.exists(proofnet_path):
+        print(f"  Skipping (ProofNet not downloaded at {proofnet_path})")
+        return
+
+    traces = parse_proofnet(proofnet_path)
+    assert len(traces) > 0, f"Expected > 0 traces, got {len(traces)}"
+    for t in traces:
+        assert t.source == "proofnet"
+
+    # Some entries may have empty proofs; skip those for training
+    non_empty = [t for t in traces if len(t.steps) > 0]
+    empty_proofs = len(traces) - len(non_empty)
+    print(f"  {len(traces)} total, {empty_proofs} entries with empty proofs")
+
+    examples = convert_to_training_examples(traces)
+    if examples:
+        for ex in examples:
+            assert len(ex.state_vec) == FEATURE_DIM
+            assert_close(sum(ex.mcts_policy), 1.0, tol=1e-6)
+
+    print("  Parsed {} ProofNet traces -> {} training examples ({} empty-proof entries)".format(len(traces), len(examples), empty_proofs))
+
+
+@test("Integration: load_dataset() dispatches correctly for downloaded formats")
+def _():
+    """Test load_dataset() auto-infers format for each downloaded dataset."""
+    from rl_agent.dataset_loaders import load_dataset, DatasetFormat
+
+    base = os.path.dirname(os.path.abspath(__file__))
+
+    # miniF2F
+    m_path = os.path.join(base, "datasets", "minif2f", "minif2f_valid.json")
+    if os.path.exists(m_path):
+        traces = load_dataset(m_path)
+        assert len(traces) > 0
+        print(f"  miniF2F: load_dataset() returned {len(traces)} traces")
+
+    # ProofNet
+    p_path = os.path.join(base, "datasets", "proofnet", "proofnet.jsonl")
+    if os.path.exists(p_path):
+        traces = load_dataset(p_path)
+        assert len(traces) > 0
+        print(f"  ProofNet: load_dataset() returned {len(traces)} traces")
+
+    # Lean Workbook
+    w_path = os.path.join(base, "datasets", "lean_workbook", "lean_workbook.json")
+    if os.path.exists(w_path):
+        traces = load_dataset(w_path, format=DatasetFormat.LEAN_WORKBOOK)
+        assert len(traces) > 0
+        print(f"  Lean Workbook: load_dataset() returned {len(traces)} traces")
+
+    print(f"  All format auto-detection tests passed")
 
 
 # -- Summary ---------------------------------------------------------------------

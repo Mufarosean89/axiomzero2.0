@@ -183,7 +183,7 @@ class BenchmarkSuite:
         ]
 
         for r in results:
-            status = "✓" if r.success else "✗"
+            status = "OK" if r.success else "FAIL"
             lines.append(
                 f"    [{status}] {r.name:30s}  "
                 f"thms={r.num_theorems}  "
@@ -194,7 +194,7 @@ class BenchmarkSuite:
 
         if failed > 0:
             lines.append("")
-            lines.append(f"  ❌ {failed} benchmark(s) failed — see above for details.")
+            lines.append(f"  X {failed} benchmark(s) failed - see above for details.")
 
         lines.append("")
         return "\n".join(lines)
@@ -413,7 +413,7 @@ def list_benchmarks(difficulty: Optional[int] = None, tag: Optional[str] = None)
     ]
 
     for p in problems:
-        diff_stars = "★" * p.difficulty
+        diff_stars = "*" * p.difficulty
         lines.append(f"    {p.name:30s} [{diff_stars}]  {p.description}")
 
     lines.append("")

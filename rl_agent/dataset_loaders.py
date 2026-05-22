@@ -128,6 +128,66 @@ class RawProofTrace:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# Streaming JSON Array Reader
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _iter_json_array_objects(filepath: str, max_objects: Optional[int] = None):
+    """
+    Yield JSON objects from a large JSON array file without loading it entirely
+    into memory.
+
+    Reads the file in 64 KB chunks and uses ``json.JSONDecoder.raw_decode`` to
+    extract individual objects.  This avoids the ``MemoryError`` that can occur
+    when ``json.load()`` is called on files >50 MB (e.g. the Lean Workbook).
+
+    Args:
+        filepath   : Path to a JSON file containing a top-level array ``[...]``.
+        max_objects: Maximum number of objects to yield, or ``None`` for all.
+
+    Yields:
+        Decoded JSON ``dict`` objects, one array element at a time.
+    """
+    decoder = json.JSONDecoder()
+    with open(filepath, "rb") as f:
+        buffer = ""
+        # Find the opening bracket '['
+        while True:
+            chunk = f.read(65536).decode("utf-8", errors="replace")
+            if not chunk:
+                break
+            buffer += chunk
+            idx = buffer.find("[")
+            if idx >= 0:
+                buffer = buffer[idx + 1:]
+                break
+
+        count = 0
+        while max_objects is None or count < max_objects:
+            buffer = buffer.lstrip()
+            if not buffer:
+                chunk = f.read(65536).decode("utf-8", errors="replace")
+                if not chunk:
+                    break
+                buffer += chunk
+                continue
+
+            if buffer.startswith("]"):
+                break
+
+            try:
+                obj, pos = decoder.raw_decode(buffer)
+                yield obj
+                count += 1
+                buffer = buffer[pos:]
+                buffer = buffer.lstrip(", \t\n\r")
+            except json.JSONDecodeError:
+                chunk = f.read(65536).decode("utf-8", errors="replace")
+                if not chunk:
+                    break
+                buffer += chunk
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # Dataset Parsers
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -306,20 +366,49 @@ def parse_minif2f(path: str) -> List[RawProofTrace]:
     return result
 
 
+def _extract_theorem_name(formal_statement: str) -> str:
+    """Extract the theorem name from a Lean formal statement.
+
+    Handles formats like::
+
+        "theorem lean_workbook_18 ... : ..."        -> "lean_workbook_18"
+        "theorem add_comm (a b : ℕ) : ..."           -> "add_comm"
+        "example : ..."                               -> "example"
+
+    Args:
+        formal_statement: A Lean theorem statement (e.g. from a JSON entry).
+
+    Returns:
+        The theorem name string, or ``"unknown"`` if it cannot be extracted.
+    """
+    stmt = formal_statement.strip()
+    for prefix in ("theorem", "lemma", "def", "example"):
+        if stmt.startswith(prefix):
+            rest = stmt[len(prefix):].lstrip()
+            # Name is the first identifier before ':', '(', or whitespace
+            name = []
+            for ch in rest:
+                if ch in (" ", ":", "("):
+                    break
+                name.append(ch)
+            return "".join(name) if name else prefix
+    return "unknown"
+
+
 def _extract_goal_from_lean_statement(statement: str) -> str:
     """Extract the goal type from a Lean theorem statement."""
     # Remove leading "theorem name ... :"
     goal = statement.strip()
     for prefix in ("theorem", "lemma", "def", "example"):
         if goal.startswith(prefix):
-            # Find the ':' separator after the binder list
+            # Find the ':' separator after the binder/name list
             idx = goal.find(":")
             if idx >= 0:
                 goal = goal[idx + 1:].strip()
             break
-    # Remove the trailing ":="
-    if goal.endswith(":="):
-        goal = goal[:-2].strip()
+    # Strip everything after ``:=`` (handles ``:= by sorry``, ``:=``, etc.)
+    if ":=" in goal:
+        goal = goal[:goal.index(":=")].strip()
     return goal.strip()
 
 
@@ -410,63 +499,95 @@ def parse_proofnet(path: str) -> List[RawProofTrace]:
     return result
 
 
-def parse_lean_workbook(path: str) -> List[RawProofTrace]:
+def parse_lean_workbook(
+    path: str,
+    max_entries: Optional[int] = 500,
+) -> List[RawProofTrace]:
     """
     Parse a Lean Workbook JSON file.
 
-    Lean Workbook entries have the structure::
+    The Lean Workbook (from HuggingFace ``internlm/Lean-Workbook``) is a large
+    JSON array of objects with the actual structure::
 
         {
-            "url": "https://github.com/leanprover-community/mathlib4/...",
-            "commit": "abc123",
-            "traces": [
-                {
-                    "state_before": { "goal": "...", "hyps": [...] },
-                    "state_after": { "goal": "...", "hyps": [...] },
-                    "tactic": "simp"
-                },
-                ...
-            ]
+            "natural_language_statement": "...",
+            "answer": "...",
+            "tags": ["inequality", "algebra"],
+            "formal_statement": "theorem lean_workbook_N ... := by sorry",
+            "split": "lean_workbook",
+            "proof": ["simp", "nlinarith", ...]
         }
 
+    Only entries with **non-empty** ``proof`` arrays produce training traces.
+    Entries with ``proof: []`` are silently skipped.
+
+    The raw file can be >90 MB and cause ``MemoryError`` with ``json.load()``,
+    so this function uses a streaming JSON array reader internally.
+
     Args:
-        path: Path to the Lean Workbook JSON file.
+        path       : Path to the Lean Workbook JSON file.
+        max_entries: Maximum number of entries to process (default 500).
+                     Set to ``None`` to process the entire file.
 
     Returns:
-        List of ``RawProofTrace``.
+        List of ``RawProofTrace`` (only entries with non-empty proofs).
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"Lean Workbook file not found: {path}")
 
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    entries = data if isinstance(data, list) else data.get("entries", [])
-
     result: List[RawProofTrace] = []
-    for entry in entries:
-        theorem = entry.get("url", entry.get("theorem", "unknown"))
-        traces = entry.get("traces", entry.get("trace", []))
+
+    for entry in _iter_json_array_objects(path, max_objects=max_entries):
+        formal_statement = entry.get("formal_statement", "")
+        proof_tactics = entry.get("proof", [])
+
+        # Skip entries without any proof steps
+        if not proof_tactics:
+            continue
+
+        theorem = _extract_theorem_name(formal_statement)
+        goal_str = _extract_goal_from_lean_statement(formal_statement)
 
         steps: List[RawProofStep] = []
-        for step_data in traces:
-            state_before = step_data.get("state_before", {})
-            tactic = step_data.get("tactic", "")
-            if tactic:
-                state_obs = _normalize_leandojo_state(state_before)
-                steps.append(RawProofStep(
-                    state_observation=state_obs,
-                    tactic=tactic,
-                    outcome=1.0,
-                    theorem_name=theorem,
-                ))
+        for i, tactic in enumerate(proof_tactics):
+            tactic = tactic.strip()
+            if not tactic:
+                continue
+            # Skip standalone comment lines
+            if tactic.startswith(("--", "/-")) and len(tactic) < 20:
+                continue
 
-        result.append(RawProofTrace(
-            theorem_name=theorem,
-            steps=steps,
-            outcome=1.0 if steps else 0.0,
-            source="lean_workbook",
-        ))
+            steps.append(RawProofStep(
+                state_observation={
+                    "theorem": theorem,
+                    "num_open_goals": 1,
+                    "num_total_goals": 1,
+                    "num_tactics_applied": i,
+                    "depth": i,
+                    "is_complete": False,
+                    "goals": [{
+                        "id": f"g_{i}",
+                        "type": goal_str,
+                        "num_hypotheses": 0,
+                        "hypotheses": [],
+                    }],
+                    "tactic_history": [
+                        {"tactic": t, "success": True}
+                        for t in proof_tactics[:i]
+                    ],
+                },
+                tactic=tactic,
+                outcome=1.0,
+                theorem_name=theorem,
+            ))
+
+        if steps:
+            result.append(RawProofTrace(
+                theorem_name=theorem,
+                steps=steps,
+                outcome=1.0,
+                source="lean_workbook",
+            ))
 
     return result
 
@@ -523,7 +644,7 @@ def generate_builtin_seed_data(
         traces.append(trace)
 
         if verbose:
-            status = "✓" if trace.outcome > 0 else "✗"
+            status = "[OK]" if trace.outcome > 0 else "[FAIL]"
             print(f"    {status} ({len(trace.steps)} steps, outcome={trace.outcome})")
 
     return traces

@@ -1,0 +1,9 @@
+=== ENTRY WITHOUT PROOF #1 ===
+Traceback (most recent call last):
+  File "D:\axiomzero2.0\_inspect_sample.py", line 53, in <module>
+    print(f"formal_statement: {obj.get('formal_statement', '')[:300]}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\seanr\AppData\Local\Programs\Python\Python313\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u211d' in position 51: character maps to <undefined>

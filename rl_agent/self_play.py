@@ -143,7 +143,7 @@ def run_episode(
         ex.outcome = outcome
 
     if verbose:
-        status = "✓ proved" if outcome > 0 else ("✗ failed" if outcome < 0 else "— timeout")
+        status = "[OK] proved" if outcome > 0 else ("[FAIL] failed" if outcome < 0 else "- timeout")
         print(f"    Result: {status} ({len(examples)} steps)")
 
     return EpisodeResult(

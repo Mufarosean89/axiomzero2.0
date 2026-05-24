@@ -2,7 +2,7 @@
 
 **AlphaZero-Style Proof Automation for Neural Network Verification**
 
-Axiom Zero is a compiler that translates Python/PyTorch source code into formal proofs verified by Lean 4. It uses an AlphaZero-style reinforcement learning agent to automatically discover proofs — no human labelling required. The Lean 4 kernel acts as the ground-truth oracle: a proof either compiles or it doesn't.
+Axiom Zero is a compiler that translates Python/PyTorch source code into formal proofs verified by Lean 4. It uses an AlphaZero-style reinforcement learning agent to automatically discover proofs  no human labelling required. The Lean 4 kernel acts as the ground-truth oracle: a proof either compiles or it doesn't.
 
 ---
 
@@ -47,37 +47,37 @@ The system has six horizontal layers that data flows through top to bottom, with
               (training signal back to agent)
 ```
 
-### Layer 1 — Input
+### Layer 1  Input
 
-- **Python source** — ordinary Python functions, classes, and loops
-- **PyTorch model** — neural network definitions with tensor operations
-- **Formal spec** — mathematical specifications as pre/post-conditions (`@requires`, `@ensures`)
+- **Python source**  ordinary Python functions, classes, and loops
+- **PyTorch model**  neural network definitions with tensor operations
+- **Formal spec**  mathematical specifications as pre/post-conditions (`@requires`, `@ensures`)
 
-### Layer 2 — Parse
+### Layer 2  Parse
 
-- **AST Extractor** — parses Python source into a normalized intermediate representation (IR)
-- **Abstract Interpreter** — infers types and tensor shapes at every program point
-- **Proof State Builder** — assembles goals and context from specs + interpreter findings
+- **AST Extractor**  parses Python source into a normalized intermediate representation (IR)
+- **Abstract Interpreter**  infers types and tensor shapes at every program point
+- **Proof State Builder**  assembles goals and context from specs + interpreter findings
 
-### Layer 3 — Agent
+### Layer 3  Agent
 
-- **RL Proof Agent** — AlphaZero-style: policy network (tactic selection) + value network (progress estimation) + MCTS (tree search)
-- **Dataset Loaders** — supports miniF2F, ProofNet, LeanDojo, and Lean Workbook for cold-start pre-training
-- **Training Orchestrator** — supervised behavioural cloning pre-training followed by AlphaZero self-play
+- **RL Proof Agent**  AlphaZero-style: policy network (tactic selection) + value network (progress estimation) + MCTS (tree search)
+- **Dataset Loaders**  supports miniF2F, ProofNet, LeanDojo, and Lean Workbook for cold-start pre-training
+- **Training Orchestrator**  supervised behavioural cloning pre-training followed by AlphaZero self-play
 
-### Layer 5 — Verify (with Lemma Database integration)
+### Layer 5  Verify (with Lemma Database integration)
 
-- **Lemma Database** — searchable 128-dim embedding index of ~60 seed lemmas (arithmetic, order, boolean, list, tensor) with n-gram hash retrieval and hit/miss feedback tracking
-- **Lean 4 kernel** — primary proof backend; either it compiles or it doesn't
+- **Lemma Database**  searchable 128-dim embedding index of ~60 seed lemmas (arithmetic, order, boolean, list, tensor) with n-gram hash retrieval and hit/miss feedback tracking
+- **Lean 4 kernel**  primary proof backend; either it compiles or it doesn't
 
-- **Lean 4 kernel** — primary proof backend; either it compiles or it doesn't
-- **Tactic Compiler** — translates agent actions into concrete proof terms
-- **Web Interface** — browser-based playground for compiling Python source to Lean 4
+- **Lean 4 kernel**  primary proof backend; either it compiles or it doesn't
+- **Tactic Compiler**  translates agent actions into concrete proof terms
+- **Web Interface**  browser-based playground for compiling Python source to Lean 4
 
-### Layer 5 — Reward
+### Layer 5  Reward
 
-- **Win condition W** — +1 if the proof compiles, making Lean the oracle
-- **Self-play loop** — continuously generates proofs and trains the networks without human labels
+- **Win condition W**  +1 if the proof compiles, making Lean the oracle
+- **Self-play loop**  continuously generates proofs and trains the networks without human labels
 
 ---
 
@@ -85,17 +85,17 @@ The system has six horizontal layers that data flows through top to bottom, with
 
 | Module | Status | Tests |
 |--------|--------|-------|
-| `ast_extractor/` | ✅ Done | 16 |
-| `abstract_interpreter/` | ✅ Done | (included above) |
-| `spec_ingestion/` | ✅ Done | (included above) |
-| `proof_engine/` | 🟡 46/48 | 48 |
-| `rl_agent/` | ✅ Done | 42 |
-| `lean_compiler/` | ✅ Done | 16 |
+| `ast_extractor/` | Done | 16 |
+| `abstract_interpreter/` | Done | (included above) |
+| `spec_ingestion/` | Done | (included above) |
+| `proof_engine/` | 46/48 | 48 |
+| `rl_agent/` | Done | 42 |
+| `lean_compiler/` | Done | 16 |
 | **Total** | **~122 tests (120 passing)** | **16 + 48 + 42 + 16** |
 
 ### What's Built
 
-#### Phase 1 — Parser Pipeline
+#### Phase 1  Parser Pipeline
 - Python source → normalized IR (functions, classes, loops, conditionals, tensor ops)
 - Type inference and tensor shape analysis over the IR
 - Spec ingestion from `@requires`/`@ensures` decorators
@@ -103,39 +103,39 @@ The system has six horizontal layers that data flows through top to bottom, with
 - Unsupported construct warnings (try/except, generators, walrus, f-strings, mutations, recursion) with strict mode
 - 16 tests covering the full pipeline
 
-#### Phase 2 — Proof Environment
-- **Proof state** — full game state representation (open goals, hypotheses, tactic history)
-- **Tactic action space** — 39 curated tactics across 10 categories (intro, apply, simp, omega, ring, cases, induction, etc.)
-- **Lean 4 server manager** — JSON-RPC 2.0 subprocess communication (works on Windows and Unix)
-- **Phase 1 → Phase 2 bridge** — converts spec obligations to proof states and Lean 4 theorem skeletons
-- **Heuristic tactic suggestions** — goal-type-aware tactic recommendations
-- **Lemma Database** — searchable embedding index of ~60 seed lemmas with n-gram hash retrieval, cosine similarity search, category filtering, and hit/miss feedback tracking
+#### Phase 2  Proof Environment
+- **Proof state**  full game state representation (open goals, hypotheses, tactic history)
+- **Tactic action space**  39 curated tactics across 10 categories (intro, apply, simp, omega, ring, cases, induction, etc.)
+- **Lean 4 server manager**  JSON-RPC 2.0 subprocess communication (works on Windows and Unix)
+- **Phase 1 → Phase 2 bridge**  converts spec obligations to proof states and Lean 4 theorem skeletons
+- **Heuristic tactic suggestions**  goal-type-aware tactic recommendations
+- **Lemma Database**  searchable embedding index of ~60 seed lemmas with n-gram hash retrieval, cosine similarity search, category filtering, and hit/miss feedback tracking
 - **46 of 48 tests passing**
 
-#### Phase 3 — RL Agent
-- **State encoder** — transforms proof states into 256-dim fixed-size feature vectors
-- **Policy + Value networks** — 2-layer MLP with He-initialized weights and full backpropagation through all layers
-- **MCTS tree search** — UCB-guided search with Dirichlet noise for exploration
-- **Self-play training loop** — generates experience, accumulates gradients, trains across iterations
-- **Cold-start dataset loaders** — parsers for miniF2F, ProofNet, LeanDojo, and Lean Workbook formats with streaming JSON array reader (handles 90+ MB files)
-- **Built-in seed data generator** — uses heuristic tactic suggestions to bootstrap the replay buffer
-- **Supervised pre-training** — behavioural cloning on dataset-derived traces before self-play
-- **Checkpointing** — save/load networks and seed data to JSON
+#### Phase 3  RL Agent
+- **State encoder**  transforms proof states into 256-dim fixed-size feature vectors
+- **Policy + Value networks**  2-layer MLP with He-initialized weights and full backpropagation through all layers
+- **MCTS tree search**  UCB-guided search with Dirichlet noise for exploration
+- **Self-play training loop**  generates experience, accumulates gradients, trains across iterations
+- **Cold-start dataset loaders**  parsers for miniF2F, ProofNet, LeanDojo, and Lean Workbook formats with streaming JSON array reader (handles 90+ MB files)
+- **Built-in seed data generator**  uses heuristic tactic suggestions to bootstrap the replay buffer
+- **Supervised pre-training**  behavioural cloning on dataset-derived traces before self-play
+- **Checkpointing**  save/load networks and seed data to JSON
 - **42 tests** covering training convergence, MCTS correctness, deterministic simulation, dataset parsing, and cold-start pipeline
 
-#### Phase 4 — Python → Lean Compiler
-- **IR → Lean 4 translation** — deterministic compilation of NormalizedIR + SpecCollection into complete Lean 4 modules
-- **Proof hole filling** — difficulty-based classification (TRIVIAL → `rfl`, EASY → `simp`/`omega`, MEDIUM → `induction`/`cases`, HARD → `sorry`)
-- **Expression translation** — Python expressions, types, operators, and function calls mapped to Lean 4 equivalents
-- **Benchmark suite** — 13 problems across 5 difficulty levels (pure arithmetic → tensor shapes)
-- **End-to-end `compile()` entry point** — Python source → complete `.lean` file in one call
+#### Phase 4  Python → Lean Compiler
+- **IR → Lean 4 translation**  deterministic compilation of NormalizedIR + SpecCollection into complete Lean 4 modules
+- **Proof hole filling**  difficulty-based classification (TRIVIAL → `rfl`, EASY → `simp`/`omega`, MEDIUM → `induction`/`cases`, HARD → `sorry`)
+- **Expression translation**  Python expressions, types, operators, and function calls mapped to Lean 4 equivalents
+- **Benchmark suite**  13 problems across 5 difficulty levels (pure arithmetic → tensor shapes)
+- **End-to-end `compile()` entry point**  Python source → complete `.lean` file in one call
 - **16 tests** covering all compiler features
 
-#### Phase 5 — Bootstrapping & Integration (In Progress)
-- **Dataset downloader** — `download_datasets.py` downloads all four external datasets (miniF2F, ProofNet, Lean Workbook, LeanDojo)
-- **Training orchestrator** — `train_rl.py` provides a CLI for supervised pre-training + self-play with dataset integration
-- **Lean 4 real-tactic simulator** — optional `--real-lean` flag to use a live Lean 4 server for accurate tactic simulation
-- **Web application** — Flask-based browser interface with syntax-highlighted Lean output, sample selector, error display, keyboard shortcuts, and one-click download
+#### Phase 5  Bootstrapping & Integration (In Progress)
+- **Dataset downloader**  `download_datasets.py` downloads all four external datasets (miniF2F, ProofNet, Lean Workbook, LeanDojo)
+- **Training orchestrator**  `train_rl.py` provides a CLI for supervised pre-training + self-play with dataset integration
+- **Lean 4 real-tactic simulator**  optional `--real-lean` flag to use a live Lean 4 server for accurate tactic simulation
+- **Web application**  Flask-based browser interface with syntax-highlighted Lean output, sample selector, error display, keyboard shortcuts, and one-click download
 
 ---
 
@@ -172,9 +172,9 @@ ir = parse_source(source, "example")
 ir = normalize(ir)
 state = analyze(ir)
 
-# state.function_envs["add"]["x"] — inferred type
-# state.shape_facts — symbolic shape constraints
-# state.type_constraints — type compatibility facts
+# state.function_envs["add"]["x"]  inferred type
+# state.shape_facts  symbolic shape constraints
+# state.type_constraints  type compatibility facts
 ```
 
 Key types: `AbstractState`, `AbstractValue`, `TypeDomain`, `TensorShape`, `ShapeDimension`
@@ -191,16 +191,16 @@ ir = parse_source(source, "example")
 ir = normalize(ir)
 specs = extract_specs(ir)
 
-# specs.total_count — number of obligations found
-# specs.preconditions — list of @requires obligations
-# specs.postconditions — list of @ensures obligations
+# specs.total_count  number of obligations found
+# specs.preconditions  list of @requires obligations
+# specs.postconditions  list of @ensures obligations
 ```
 
 Key types: `SpecCollection`, `ProofObligation`, `ObligationKind`, `ObligationStatus`
 
 ### `proof_engine/`
 
-The game engine — proof state management, tactic execution, lemma database, and Lean 4 integration.
+The game engine  proof state management, tactic execution, lemma database, and Lean 4 integration.
 
 ```python
 from proof_engine import (
@@ -283,7 +283,7 @@ print(suite.summary(results))
 ```
 
 Key types: `IRToLeanCompiler`, `HoleFiller`, `HoleDifficulty`, `BenchmarkSuite`, `BenchmarkProblem`, `BenchmarkResult`
-Key functions: `compile()` — end-to-end Python source → Lean 4 module string
+Key functions: `compile()`  end-to-end Python source → Lean 4 module string
 
 ### `rl_agent/`
 
@@ -388,8 +388,8 @@ Features: syntax highlighting, sample programs, error display, line numbers, key
 ## Prerequisites
 
 - **Python 3.10+**
-- **(Optional) Flask** — for the web application (`pip install -r requirements.txt`)
-- **(Optional) Lean 4** — for full proof verification with live server
+- **(Optional) Flask**  for the web application (`pip install -r requirements.txt`)
+- **(Optional) Lean 4**  for full proof verification with live server
 
 ### Setup
 
@@ -543,13 +543,13 @@ axiom-zero/
 
 ## Roadmap
 
-### ✅ Phase 1 — Parser Pipeline (Complete)
+### Phase 1  Parser Pipeline (Complete)
 - Python source → normalized IR
 - Abstract interpretation (type/shape analysis)
 - Spec ingestion from decorators
 - Unsupported construct warnings with strict mode
 
-### ✅ Phase 2 — Proof Environment (Complete)
+### Phase 2  Proof Environment (Complete)
 - Proof state game engine
 - 39 curated tactics across 10 categories
 - Lean 4 JSON-RPC server interface
@@ -557,7 +557,7 @@ axiom-zero/
 - Lemma database with embedding-based retrieval (60+ seed lemmas)
 - Heuristic tactic suggestions with goal-type awareness
 
-### ✅ Phase 3 — RL Agent (Complete)
+### Phase 3  RL Agent (Complete)
 - State encoder (proof state → 256-dim feature vectors)
 - Policy + value networks with full backprop
 - MCTS tree search with deterministic simulation
@@ -566,20 +566,20 @@ axiom-zero/
 - Cold-start seed data generation and supervised pre-training
 - Checkpointing and persistence
 
-### ✅ Phase 4 — Python → Lean Compiler (Complete)
+### Phase 4  Python → Lean Compiler (Complete)
 - IR → Lean 4 skeleton translation
 - Proof hole classification and filling
 - Expression and type translation (Python → Lean)
 - Benchmark suite with 13 problems across 5 difficulty levels
 
-### 🚧 Phase 5 — Bootstrapping & Scaling (In Progress)
-- ✅ Dataset downloader (miniF2F, ProofNet, Lean Workbook, LeanDojo)
-- ✅ Training orchestrator with CLI (`train_rl.py`)
-- ✅ Real Lean 4 server integration (`--real-lean` flag)
-- ✅ Web application UI (Flask)
-- 📋 Train the RL agent on the full benchmark suite
-- 📋 Scale to larger Python programs and PyTorch models
-- 📋 Proof verification against live Lean 4 kernel
+### Phase 5  Bootstrapping & Scaling (In Progress)
+- Dataset downloader (miniF2F, ProofNet, Lean Workbook, LeanDojo)
+- Training orchestrator with CLI (`train_rl.py`)
+- Real Lean 4 server integration (`--real-lean` flag)
+- Web application UI (Flask)
+- Train the RL agent on the full benchmark suite
+- Scale to larger Python programs and PyTorch models
+- Proof verification against live Lean 4 kernel
 
 ---
 

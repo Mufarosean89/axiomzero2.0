@@ -1,11 +1,7 @@
-"""
-Axiom Zero - Phase 3 Test Suite
-RL Agent: State Encoder, Policy/Value Network, MCTS, Self-Play
+"""Phase 3 tests: RL Agent (state encoder, policy/value network, MCTS, self-play).
 
 Run:
     python test_phase3.py
-
-Expected: All tests pass.
 """
 
 import sys
@@ -15,7 +11,6 @@ import random
 import json
 import tempfile
 import traceback
-import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -34,46 +29,8 @@ from rl_agent import (
     EpisodeResult, TrainingExample,
 )
 
-# -- Test harness ------------------------------------------------------------------
 
-PASS = 0
-FAIL = 0
-results = []
-
-
-def test(name: str):
-    """Decorator that registers and runs a test function."""
-    def decorator(fn):
-        global PASS, FAIL
-        try:
-            fn()
-            PASS += 1
-            results.append(("PASS", name))
-            print(f"  OK  {name}")
-        except Exception as e:
-            FAIL += 1
-            results.append(("FAIL", name, str(e)))
-            print(f"  FAIL  {name}")
-            print(f"       {e}")
-            if "--verbose" in sys.argv:
-                traceback.print_exc()
-        return fn
-    return decorator
-
-
-def assert_eq(a, b, msg=""):
-    assert a == b, f"{msg}: {a!r} != {b!r}"
-
-
-def assert_close(a: float, b: float, tol: float = 1e-6, msg: str = ""):
-    assert abs(a - b) < tol, f"{msg}: |{a} - {b}| >= {tol}"
-
-
-def assert_in_range(v: float, lo: float, hi: float, msg: str = ""):
-    assert lo <= v <= hi, f"{msg}: {v} not in [{lo}, {hi}]"
-
-
-# -- Fixtures --------------------------------------------------------------------
+# ── Fixtures ────────────────────────────────────────────────────────────────
 
 SIMPLE_SOURCE = """
 @requires("x > 0")
@@ -107,6 +64,41 @@ def _make_proof_states(source: str = SIMPLE_SOURCE) -> list:
     return build_proof_state_collection(specs)
 
 
+# ── Helpers ─────────────────────────────────────────────────────────────────
+
+PASS = 0
+FAIL = 0
+results = []
+
+
+def _assert_eq(a, b, msg=""):
+    assert a == b, f"{msg}: {a!r} != {b!r}"
+
+
+def _assert_close(a: float, b: float, tol: float = 1e-6, msg: str = ""):
+    assert abs(a - b) < tol, f"{msg}: |{a} - {b}| >= {tol}"
+
+
+def _assert_in_range(v: float, lo: float, hi: float, msg: str = ""):
+    assert lo <= v <= hi, f"{msg}: {v} not in [{lo}, {hi}]"
+
+
+def _run_test(name: str, fn):
+    global PASS, FAIL
+    try:
+        fn()
+        PASS += 1
+        results.append(("PASS", name))
+        print(f"  OK  {name}")
+    except Exception as e:
+        FAIL += 1
+        results.append(("FAIL", name, str(e)))
+        print(f"  FAIL  {name}")
+        print(f"       {e}")
+        if "--verbose" in sys.argv:
+            traceback.print_exc()
+
+
 # =============================================================================
 # Section 1: State Encoder
 # =============================================================================
@@ -114,61 +106,52 @@ def _make_proof_states(source: str = SIMPLE_SOURCE) -> list:
 print("\n-- Section 1: State Encoder ------------------------------------------------")
 
 
-@test("encode() returns a list of length FEATURE_DIM")
-def _():
+def test_encode_returns_list():
     ps = _make_proof_states()[0]
     vec = encode(ps.to_observation())
-    assert isinstance(vec, list), "Not a list"
-    assert_eq(len(vec), FEATURE_DIM, "Vector length")
+    assert isinstance(vec, list)
+    _assert_eq(len(vec), FEATURE_DIM, "Vector length")
 
 
-@test("FEATURE_DIM == 256")
-def _():
-    assert_eq(FEATURE_DIM, 256)
+def test_feature_dim():
+    _assert_eq(FEATURE_DIM, 256)
 
 
-@test("encode() output is all floats")
-def _():
+def test_encode_all_floats():
     ps = _make_proof_states()[0]
     vec = encode(ps.to_observation())
-    assert all(isinstance(v, float) for v in vec), "Non-float elements"
+    assert all(isinstance(v, float) for v in vec)
 
 
-@test("encode() global scalars are in [0, 1]")
-def _():
+def test_encode_global_scalars_in_range():
     ps = _make_proof_states()[0]
     vec = encode(ps.to_observation())
     for i in range(8):
-        assert_in_range(vec[i], 0.0, 1.0, f"vec[{i}]")
+        _assert_in_range(vec[i], 0.0, 1.0, f"vec[{i}]")
 
 
-@test("encode() tactic bag section is in [0, 1]")
-def _():
+def test_encode_tactic_bag_in_range():
     ps = _make_proof_states()[0]
     vec = encode(ps.to_observation())
     for i in range(8, 47):
-        assert_in_range(vec[i], 0.0, 1.0, f"vec[{i}]")
+        _assert_in_range(vec[i], 0.0, 1.0, f"vec[{i}]")
 
 
-@test("encode() produces different vectors for different states")
-def _():
+def test_encode_different_states_differ():
     states = _make_proof_states(MULTI_SOURCE)
-    # Find two states with distinct theorem names (builder may produce duplicates)
     seen = {}
     for ps in states:
         name = ps.theorem_name
         if name not in seen:
             seen[name] = ps
-    if len(seen) < 2:
-        return  # not enough distinct theorems — skip
-    distinct = list(seen.values())
-    v1 = encode(distinct[0].to_observation())
-    v2 = encode(distinct[1].to_observation())
-    assert v1 != v2, "Different theorems produced identical vectors"
+    if len(seen) >= 2:
+        distinct = list(seen.values())
+        v1 = encode(distinct[0].to_observation())
+        v2 = encode(distinct[1].to_observation())
+        assert v1 != v2
 
 
-@test("encode() handles empty proof state (no goals)")
-def _():
+def test_encode_empty_state():
     obs = {
         "theorem": "empty",
         "num_open_goals": 0,
@@ -180,17 +163,14 @@ def _():
         "tactic_history": [],
     }
     vec = encode(obs)
-    assert_eq(len(vec), FEATURE_DIM)
-    assert_eq(vec[4], 1.0, "is_complete flag")
+    _assert_eq(len(vec), FEATURE_DIM)
+    _assert_eq(vec[4], 1.0, "is_complete flag")
 
 
-@test("encode() is deterministic")
-def _():
+def test_encode_deterministic():
     ps = _make_proof_states()[0]
     obs = ps.to_observation()
-    v1 = encode(obs)
-    v2 = encode(obs)
-    assert_eq(v1, v2, "encode() is not deterministic")
+    _assert_eq(encode(obs), encode(obs))
 
 
 # =============================================================================
@@ -200,50 +180,43 @@ def _():
 print("\n-- Section 2: Policy / Value Network --------------------------------------")
 
 
-@test("PolicyValueNet initializes without error")
-def _():
+def test_network_initialization():
     net = PolicyValueNet()
-    assert net.num_actions == len(CORE_TACTICS)
+    _assert_eq(net.num_actions, len(CORE_TACTICS))
 
 
-@test("forward() returns (priors, value) with correct shapes")
-def _():
+def test_network_forward_shapes():
     net = PolicyValueNet()
     vec = [0.0] * FEATURE_DIM
     priors, value = net.forward(vec)
-    assert_eq(len(priors), len(CORE_TACTICS), "priors length")
-    assert isinstance(value, float), "value is not float"
+    _assert_eq(len(priors), len(CORE_TACTICS), "priors length")
+    assert isinstance(value, float)
 
 
-@test("priors sum to 1.0 (softmax)")
-def _():
+def test_priors_sum_to_one():
     net = PolicyValueNet()
     vec = [random.gauss(0, 1) for _ in range(FEATURE_DIM)]
     priors, _ = net.forward(vec)
-    total = sum(priors)
-    assert_close(total, 1.0, tol=1e-6, msg="priors sum")
+    _assert_close(sum(priors), 1.0, tol=1e-6, msg="priors sum")
 
 
-@test("all priors are in [0, 1]")
-def _():
+def test_priors_in_range():
     net = PolicyValueNet()
     vec = [random.gauss(0, 1) for _ in range(FEATURE_DIM)]
     priors, _ = net.forward(vec)
     for i, p in enumerate(priors):
-        assert_in_range(p, 0.0, 1.0, f"prior[{i}]")
+        _assert_in_range(p, 0.0, 1.0, f"prior[{i}]")
 
 
-@test("value is in [-1, 1]")
-def _():
+def test_value_in_range():
     net = PolicyValueNet()
     for _ in range(5):
         vec = [random.gauss(0, 1) for _ in range(FEATURE_DIM)]
         _, v = net.forward(vec)
-        assert_in_range(v, -1.0, 1.0, "value")
+        _assert_in_range(v, -1.0, 1.0, "value")
 
 
-@test("update_weights() returns (policy_loss, value_loss) floats")
-def _():
+def test_update_weights_returns_floats():
     net = PolicyValueNet()
     na = net.num_actions
     vecs = [[random.gauss(0, 0.1) for _ in range(FEATURE_DIM)] for _ in range(4)]
@@ -252,15 +225,13 @@ def _():
     pi_loss, v_loss = net.update_weights(pols, vals, vecs, lr=1e-3)
     assert isinstance(pi_loss, float)
     assert isinstance(v_loss, float)
-    assert pi_loss >= 0.0, "Policy loss must be non-negative"
+    assert pi_loss >= 0.0
 
 
-@test("update_weights() reduces policy loss over multiple steps")
-def _():
+def test_update_weights_reduces_loss():
     """Network should overfit on a tiny constant batch."""
     net = PolicyValueNet()
     na = net.num_actions
-    # Fixed target: always predict tactic 0
     target_pol = [0.0] * na
     target_pol[0] = 1.0
     vecs = [[0.1 * i for i in range(FEATURE_DIM)]] * 8
@@ -270,16 +241,14 @@ def _():
     for _ in range(20):
         pi_loss, _ = net.update_weights(pols, vals, vecs, lr=1e-2)
         losses_pi.append(pi_loss)
-    # Loss should decrease on average
     first_half = sum(losses_pi[:10]) / 10
     second_half = sum(losses_pi[10:]) / 10
     assert second_half <= first_half + 0.5, (
-        "Loss did not decrease: {:.4f} -> {:.4f}".format(first_half, second_half)
+        f"Loss did not decrease: {first_half:.4f} -> {second_half:.4f}"
     )
 
 
-@test("save() and load() round-trip preserves forward output")
-def _():
+def test_save_load_round_trip():
     net = PolicyValueNet()
     vec = [random.gauss(0, 1) for _ in range(FEATURE_DIM)]
     priors_before, value_before = net.forward(vec)
@@ -290,9 +259,9 @@ def _():
         net.save(path)
         net2 = PolicyValueNet.load(path)
         priors_after, value_after = net2.forward(vec)
-        assert_close(value_before, value_after, tol=1e-6, msg="value round-trip")
+        _assert_close(value_before, value_after, tol=1e-6, msg="value round-trip")
         for i, (a, b) in enumerate(zip(priors_before, priors_after)):
-            assert_close(a, b, tol=1e-6, msg=f"prior[{i}] round-trip")
+            _assert_close(a, b, tol=1e-6, msg=f"prior[{i}] round-trip")
     finally:
         os.unlink(path)
 
@@ -304,8 +273,7 @@ def _():
 print("\n-- Section 3: MCTS ---------------------------------------------------------")
 
 
-@test("TacticSimulator.apply() returns (bool, ProofState, float)")
-def _():
+def test_tactic_simulator_returns_tuple():
     sim = TacticSimulator()
     ps = _make_proof_states()[0]
     success, new_state, reward = sim.apply(ps, "intro h")
@@ -314,53 +282,44 @@ def _():
     assert isinstance(reward, float)
 
 
-@test("TacticSimulator reward is in [-1.0, 1.0]")
-def _():
+def test_tactic_simulator_reward_in_range():
     sim = TacticSimulator()
     ps = _make_proof_states()[0]
     for tactic in ["omega", "intro h", "apply", "simp", "rfl"]:
         _, _, reward = sim.apply(ps, tactic)
-        assert_in_range(reward, -1.0, 1.0, f"reward for {tactic}")
+        _assert_in_range(reward, -1.0, 1.0, f"reward for {tactic}")
 
 
-@test("MCTSNode UCB score is finite")
-def _():
+def test_mcts_node_ucb_finite():
     node = MCTSNode(state=_make_proof_states()[0], prior=0.5, visit_count=3, value_sum=1.5)
-    score = node.ucb_score(parent_visit_count=10)
-    assert math.isfinite(score), "UCB score not finite"
+    assert math.isfinite(node.ucb_score(parent_visit_count=10))
 
 
-@test("MCTSNode UCB score with zero visits equals prior * c_puct * sqrt(parent_N)")
-def _():
+def test_mcts_node_ucb_unvisited():
     from rl_agent.mcts import C_PUCT
     node = MCTSNode(state=_make_proof_states()[0], prior=0.4, visit_count=0, value_sum=0.0)
     score = node.ucb_score(parent_visit_count=9)
-    expected = C_PUCT * 0.4 * math.sqrt(9)
-    assert_close(score, expected, tol=1e-6, msg="UCB unvisited")
+    _assert_close(score, C_PUCT * 0.4 * math.sqrt(9), tol=1e-6, msg="UCB unvisited")
 
 
-@test("MCTS.search() returns action_probs summing to 1.0")
-def _():
+def test_mcts_search_returns_valid_probs():
     net = PolicyValueNet()
     ps = _make_proof_states()[0]
     mcts = MCTS(net, num_simulations=10)
     probs, _ = mcts.search(ps)
-    assert_eq(len(probs), len(CORE_TACTICS))
-    total = sum(probs)
-    assert_close(total, 1.0, tol=1e-6, msg="action_probs sum")
+    _assert_eq(len(probs), len(CORE_TACTICS))
+    _assert_close(sum(probs), 1.0, tol=1e-6, msg="action_probs sum")
 
 
-@test("MCTS.search() returns root_value in [-1, 1]")
-def _():
+def test_mcts_root_value_in_range():
     net = PolicyValueNet()
     ps = _make_proof_states()[0]
     mcts = MCTS(net, num_simulations=10)
     _, value = mcts.search(ps)
-    assert_in_range(value, -1.0, 1.0, "root_value")
+    _assert_in_range(value, -1.0, 1.0, "root_value")
 
 
-@test("MCTS.best_action() returns a valid tactic name")
-def _():
+def test_mcts_best_action_is_valid():
     net = PolicyValueNet()
     ps = _make_proof_states()[0]
     mcts = MCTS(net, num_simulations=10)
@@ -368,27 +327,24 @@ def _():
     assert action in CORE_TACTICS, f"'{action}' not a valid tactic"
 
 
-@test("MCTS expands root and creates children for each tactic")
-def _():
+def test_mcts_expand_creates_children():
     net = PolicyValueNet()
     ps = _make_proof_states()[0]
     mcts = MCTS(net, num_simulations=5)
     root = MCTSNode(state=ps)
     mcts._expand(root)
-    assert len(root.children) == len(CORE_TACTICS), "Wrong number of children"
+    _assert_eq(len(root.children), len(CORE_TACTICS), "Wrong number of children")
 
 
-@test("MCTS search with more simulations increases visit counts")
-def _():
+def test_mcts_more_simulations_affects_probs():
     net = PolicyValueNet()
     ps = _make_proof_states()[0]
-    mcts = MCTS(net, num_simulations=20)
-    probs1, _ = mcts.search(ps)
+    mcts1 = MCTS(net, num_simulations=20)
+    probs1, _ = mcts1.search(ps)
     mcts2 = MCTS(net, num_simulations=5)
     probs2, _ = mcts2.search(ps)
-    # Both are valid probability distributions
-    assert_close(sum(probs1), 1.0, tol=1e-6, msg="probs1")
-    assert_close(sum(probs2), 1.0, tol=1e-6, msg="probs2")
+    _assert_close(sum(probs1), 1.0, tol=1e-6, msg="probs1")
+    _assert_close(sum(probs2), 1.0, tol=1e-6, msg="probs2")
 
 
 # =============================================================================
@@ -398,58 +354,49 @@ def _():
 print("\n-- Section 4: Self-Play Episode --------------------------------------------")
 
 
-@test("run_episode() returns an EpisodeResult")
-def _():
+def test_run_episode_returns_episode_result():
     net = PolicyValueNet()
     ps = _make_proof_states()[0]
     result = run_episode(ps, net, num_simulations=5)
     assert isinstance(result, EpisodeResult)
 
 
-@test("EpisodeResult.outcome is in {-1, 0, +1}")
-def _():
+def test_episode_outcome_is_valid():
     net = PolicyValueNet()
     ps = _make_proof_states()[0]
     result = run_episode(ps, net, num_simulations=5)
     assert result.outcome in (-1.0, 0.0, 1.0), f"Unexpected outcome: {result.outcome}"
 
 
-@test("EpisodeResult.examples all have correct state_vec length")
-def _():
+def test_episode_examples_have_correct_vec_length():
     net = PolicyValueNet()
     ps = _make_proof_states()[0]
     result = run_episode(ps, net, num_simulations=5)
     for i, ex in enumerate(result.examples):
-        assert_eq(len(ex.state_vec), FEATURE_DIM, f"Example {i} state_vec length")
+        _assert_eq(len(ex.state_vec), FEATURE_DIM, f"Example {i} state_vec length")
 
 
-@test("EpisodeResult.examples all have mcts_policy summing to 1")
-def _():
+def test_episode_examples_policy_sums_to_one():
     net = PolicyValueNet()
     ps = _make_proof_states()[0]
     result = run_episode(ps, net, num_simulations=5)
     for i, ex in enumerate(result.examples):
-        total = sum(ex.mcts_policy)
-        assert_close(total, 1.0, tol=1e-6, msg=f"Example {i} policy sum")
+        _assert_close(sum(ex.mcts_policy), 1.0, tol=1e-6, msg=f"Example {i} policy sum")
 
 
-@test("EpisodeResult.examples all have the same outcome")
-def _():
+def test_episode_examples_have_same_outcome():
     net = PolicyValueNet()
     ps = _make_proof_states()[0]
     result = run_episode(ps, net, num_simulations=5)
     outcomes = {ex.outcome for ex in result.examples}
-    assert len(outcomes) <= 1, f"Mixed outcomes in episode: {outcomes}"
+    assert len(outcomes) <= 1, f"Mixed outcomes: {outcomes}"
 
 
-@test("run_episode() with temperature=0 is greedy")
-def _():
-    """Two runs with the same network and temperature=0 should behave similarly."""
+def test_run_episode_temperature_zero():
     net = PolicyValueNet()
     ps = _make_proof_states()[0]
     r1 = run_episode(ps, net, num_simulations=5, temperature=0)
     r2 = run_episode(ps, net, num_simulations=5, temperature=0)
-    # Both are valid -- just check they complete without error
     assert isinstance(r1, EpisodeResult)
     assert isinstance(r2, EpisodeResult)
 
@@ -461,16 +408,14 @@ def _():
 print("\n-- Section 5: SelfPlayTrainer ----------------------------------------------")
 
 
-@test("SelfPlayTrainer initialises with default config")
-def _():
+def test_trainer_initialization():
     ps_list = _make_proof_states()
     trainer = SelfPlayTrainer(ps_list)
     assert trainer.config.num_iterations == 10
     assert len(trainer.replay_buffer) == 0
 
 
-@test("SelfPlayTrainer.run() returns a PolicyValueNet")
-def _():
+def test_trainer_run_returns_network():
     ps_list = _make_proof_states()
     cfg = TrainingConfig(
         num_iterations=2,
@@ -483,8 +428,7 @@ def _():
     assert isinstance(net, PolicyValueNet)
 
 
-@test("SelfPlayTrainer accumulates replay buffer during training")
-def _():
+def test_trainer_accumulates_buffer():
     ps_list = _make_proof_states()
     cfg = TrainingConfig(
         num_iterations=1,
@@ -494,30 +438,28 @@ def _():
     )
     trainer = SelfPlayTrainer(ps_list, config=cfg)
     trainer.run()
-    assert len(trainer.replay_buffer) > 0, "Replay buffer empty after training"
+    assert len(trainer.replay_buffer) > 0
 
 
-@test("SelfPlayTrainer records stats per iteration")
-def _():
+def test_trainer_records_stats():
     ps_list = _make_proof_states()
     cfg = TrainingConfig(
+        pretrain_on_builtin=False,
         num_iterations=2,
         episodes_per_iteration=2,
         mcts_simulations=5,
         batch_size=2,
-        pretrain_on_builtin=False,  # disable auto-seed to avoid extra pretrain stat
     )
     trainer = SelfPlayTrainer(ps_list, config=cfg)
     trainer.run()
-    assert_eq(len(trainer.stats), 2, "stats count")
+    _assert_eq(len(trainer.stats), 2, "stats count")
     for stat in trainer.stats:
         assert "win_rate" in stat
         assert "policy_loss" in stat
         assert "value_loss" in stat
 
 
-@test("SelfPlayTrainer saves checkpoints to disk")
-def _():
+def test_trainer_saves_checkpoints():
     ps_list = _make_proof_states()
     with tempfile.TemporaryDirectory() as tmpdir:
         cfg = TrainingConfig(
@@ -532,11 +474,10 @@ def _():
         files = os.listdir(tmpdir)
         assert len(files) == 2, f"Expected 2 checkpoints, got {files}"
         for f in files:
-            assert f.endswith(".json"), f"Non-JSON file: {f}"
+            assert f.endswith(".json")
 
 
-@test("train_from_source() convenience function works end-to-end")
-def _():
+def test_train_from_source():
     cfg = TrainingConfig(
         num_iterations=1,
         episodes_per_iteration=2,
@@ -548,8 +489,7 @@ def _():
     assert len(stats) >= 1
 
 
-@test("train_from_source() works on multi-function source")
-def _():
+def test_train_from_source_multi_function():
     cfg = TrainingConfig(
         num_iterations=1,
         episodes_per_iteration=2,
@@ -561,14 +501,13 @@ def _():
 
 
 # =============================================================================
-# Section 6: Integration (Phases 1->2->3 pipeline)
+# Section 6: Integration (Phases 1-2-3 pipeline)
 # =============================================================================
 
 print("\n-- Section 6: Full Pipeline Integration ------------------------------------")
 
 
-@test("Full pipeline: source -> proof states -> encoded observations")
-def _():
+def test_pipeline_source_to_encoded():
     ir = parse_source(SIMPLE_SOURCE, "pipeline_test")
     ir = normalize(ir)
     state = analyze(ir)
@@ -579,33 +518,30 @@ def _():
     for ps in proof_states:
         obs = ps.to_observation()
         vec = encode(obs)
-        assert_eq(len(vec), FEATURE_DIM)
+        _assert_eq(len(vec), FEATURE_DIM)
 
 
-@test("Full pipeline: encoded observations -> network forward pass")
-def _():
+def test_pipeline_network_forward():
     ps_list = _make_proof_states()
     net = PolicyValueNet()
     for ps in ps_list:
         vec = encode(ps.to_observation())
         priors, value = net.forward(vec)
-        assert_close(sum(priors), 1.0, tol=1e-6)
-        assert_in_range(value, -1.0, 1.0)
+        _assert_close(sum(priors), 1.0, tol=1e-6)
+        _assert_in_range(value, -1.0, 1.0)
 
 
-@test("Full pipeline: MCTS proof search on real proof states")
-def _():
+def test_pipeline_mcts_search():
     ps_list = _make_proof_states()
     net = PolicyValueNet()
     mcts = MCTS(net, num_simulations=10)
     for ps in ps_list:
         probs, val = mcts.search(ps)
-        assert_close(sum(probs), 1.0, tol=1e-6)
-        assert_in_range(val, -1.0, 1.0)
+        _assert_close(sum(probs), 1.0, tol=1e-6)
+        _assert_in_range(val, -1.0, 1.0)
 
 
-@test("Full pipeline: self-play episode on real proof state")
-def _():
+def test_pipeline_self_play_episode():
     ps_list = _make_proof_states(MULTI_SOURCE)
     net = PolicyValueNet()
     for ps in ps_list:
@@ -621,18 +557,11 @@ def _():
 print("\n-- Section 7: Cold-Start / Dataset Loaders --------------------------------")
 
 
-@test("generate_builtin_seed_data() returns RawProofTrace list")
-def _():
-    from rl_agent.dataset_loaders import (
-        generate_builtin_seed_data,
-        RawProofTrace, RawProofStep,
-    )
+def test_generate_builtin_seed_data_returns_traces():
+    from rl_agent.dataset_loaders import generate_builtin_seed_data, RawProofTrace, RawProofStep
     ps_list = _make_proof_states()
     traces = generate_builtin_seed_data(
-        proof_states=ps_list,
-        max_traces=5,
-        max_steps_per_trace=5,
-        temperature=0.0,
+        proof_states=ps_list, max_traces=5, max_steps_per_trace=5, temperature=0.0,
     )
     assert isinstance(traces, list)
     for t in traces:
@@ -640,39 +569,28 @@ def _():
         assert isinstance(t.steps, list)
         for s in t.steps:
             assert isinstance(s, RawProofStep)
-            assert "tactic" in str(type(s.tactic)) or isinstance(s.tactic, str)
     print(f"  Generated {len(traces)} trace(s)")
 
 
-@test("generate_builtin_seed_data() produces >0 steps when states exist")
-def _():
+def test_generate_builtin_seed_data_produces_steps():
     from rl_agent.dataset_loaders import generate_builtin_seed_data
     ps_list = _make_proof_states()
     traces = generate_builtin_seed_data(
-        proof_states=ps_list,
-        max_traces=3,
-        max_steps_per_trace=5,
-        temperature=0.0,
+        proof_states=ps_list, max_traces=3, max_steps_per_trace=5, temperature=0.0,
     )
     total_steps = sum(len(t.steps) for t in traces)
-    assert total_steps > 0, f"Expected > 0 steps across {len(traces)} traces, got {total_steps}"
+    assert total_steps > 0
     print(f"  Total steps across {len(traces)} traces: {total_steps}")
 
 
-@test("convert_to_training_examples() returns TrainingExample list")
-def _():
+def test_convert_to_training_examples():
     from rl_agent.dataset_loaders import (
-        generate_builtin_seed_data,
-        convert_to_training_examples,
-        RawProofTrace, RawProofStep,
+        generate_builtin_seed_data, convert_to_training_examples,
     )
     from rl_agent import TrainingExample
     ps_list = _make_proof_states()
     traces = generate_builtin_seed_data(
-        proof_states=ps_list,
-        max_traces=3,
-        max_steps_per_trace=5,
-        temperature=0.0,
+        proof_states=ps_list, max_traces=3, max_steps_per_trace=5, temperature=0.0,
     )
     examples = convert_to_training_examples(traces)
     assert isinstance(examples, list)
@@ -682,66 +600,45 @@ def _():
     print(f"  Converted {len(traces)} trace(s) to {len(examples)} example(s)")
 
 
-@test("convert_to_training_examples() produces one-hot policies summing to 1")
-def _():
+def test_convert_to_training_examples_policies():
     from rl_agent.dataset_loaders import (
-        generate_builtin_seed_data,
-        convert_to_training_examples,
+        generate_builtin_seed_data, convert_to_training_examples,
     )
     ps_list = _make_proof_states()
     traces = generate_builtin_seed_data(
-        proof_states=ps_list,
-        max_traces=2,
-        max_steps_per_trace=5,
-        temperature=0.0,
+        proof_states=ps_list, max_traces=2, max_steps_per_trace=5, temperature=0.0,
     )
     examples = convert_to_training_examples(traces)
     for i, ex in enumerate(examples):
-        total = sum(ex.mcts_policy)
-        assert_close(total, 1.0, tol=1e-6, msg=f"Example {i} policy sum")
-    print(f"  All {len(examples)} example(s) have valid one-hot policies")
+        _assert_close(sum(ex.mcts_policy), 1.0, tol=1e-6, msg=f"Example {i} policy sum")
+    print(f"  All {len(examples)} example(s) have valid policies")
 
 
-@test("convert_with_mcts_policy() produces label-smoothed policies")
-def _():
+def test_convert_with_mcts_policy_smoothing():
     from rl_agent.dataset_loaders import (
-        generate_builtin_seed_data,
-        convert_with_mcts_policy,
+        generate_builtin_seed_data, convert_with_mcts_policy,
     )
-    from proof_engine import CORE_TACTICS
     ps_list = _make_proof_states()
     traces = generate_builtin_seed_data(
-        proof_states=ps_list,
-        max_traces=2,
-        max_steps_per_trace=5,
-        temperature=0.0,
+        proof_states=ps_list, max_traces=2, max_steps_per_trace=5, temperature=0.0,
     )
     num_actions = len(CORE_TACTICS)
     examples = convert_with_mcts_policy(traces, num_actions, smooth_eps=0.1)
     for i, ex in enumerate(examples):
-        total = sum(ex.mcts_policy)
-        assert_close(total, 1.0, tol=1e-6, msg=f"Example {i} smoothed policy sum")
-        # Check that no single action has all the probability (unless num_actions == 1)
-        max_p = max(ex.mcts_policy)
+        _assert_close(sum(ex.mcts_policy), 1.0, tol=1e-6, msg=f"Example {i} smoothed policy sum")
         if num_actions > 1:
-            assert max_p < 1.0, f"Example {i} smoothed policy has a 1.0 entry"
+            assert max(ex.mcts_policy) < 1.0
     print(f"  All {len(examples)} example(s) have valid smoothed policies")
 
 
-@test("save_seed_data() and load_seed_data() round-trip")
-def _():
-    import tempfile
+def test_seed_data_save_load_round_trip():
     from rl_agent.dataset_loaders import (
-        generate_builtin_seed_data,
-        convert_to_training_examples,
+        generate_builtin_seed_data, convert_to_training_examples,
         save_seed_data, load_seed_data,
     )
     ps_list = _make_proof_states()
     traces = generate_builtin_seed_data(
-        proof_states=ps_list,
-        max_traces=2,
-        max_steps_per_trace=5,
-        temperature=0.0,
+        proof_states=ps_list, max_traces=2, max_steps_per_trace=5, temperature=0.0,
     )
     examples_orig = convert_to_training_examples(traces)
 
@@ -750,199 +647,139 @@ def _():
     try:
         save_seed_data(examples_orig, path)
         examples_loaded = load_seed_data(path)
-        assert_eq(len(examples_orig), len(examples_loaded), "Example count")
+        _assert_eq(len(examples_orig), len(examples_loaded), "Example count")
         for i, (a, b) in enumerate(zip(examples_orig, examples_loaded)):
-            assert_eq(len(a.state_vec), len(b.state_vec), f"Example {i} state_vec length")
-            assert_close(sum(a.mcts_policy), sum(b.mcts_policy), tol=1e-6, msg=f"Example {i} policy sum")
+            _assert_eq(len(a.state_vec), len(b.state_vec), f"Example {i} state_vec length")
+            _assert_close(sum(a.mcts_policy), sum(b.mcts_policy), tol=1e-6, msg=f"Example {i} policy sum")
     finally:
         os.unlink(path)
     print(f"  Round-trip preserved {len(examples_orig)} example(s)")
 
 
 # =============================================================================
-# Section 8: Cold-Start / Buffer Seeding & Supervised Pre-Training
+# Section 8: Buffer Seeding & Supervised Pre-Training
 # =============================================================================
 
 print("\n-- Section 8: Buffer Seeding & Supervised Pre-Training --------------------")
 
 
-@test("SelfPlayTrainer.seed_buffer() populates the replay buffer")
-def _():
-    from rl_agent.dataset_loaders import (
-        generate_builtin_seed_data,
-        convert_to_training_examples,
-    )
+def test_seed_buffer_populates():
+    from rl_agent.dataset_loaders import generate_builtin_seed_data, convert_to_training_examples
+
     ps_list = _make_proof_states()
     traces = generate_builtin_seed_data(
-        proof_states=ps_list,
-        max_traces=2,
-        max_steps_per_trace=5,
-        temperature=0.0,
+        proof_states=ps_list, max_traces=2, max_steps_per_trace=5, temperature=0.0,
     )
     examples = convert_to_training_examples(traces)
 
-    cfg = TrainingConfig(pretrain_on_builtin=False)  # disable auto-seed
+    cfg = TrainingConfig(pretrain_on_builtin=False)
     trainer = SelfPlayTrainer(ps_list, config=cfg)
-    assert len(trainer.replay_buffer) == 0, "Buffer should start empty"
+    assert len(trainer.replay_buffer) == 0
 
     count = trainer.seed_buffer(examples)
-    assert count > 0, f"Expected > 0 seeded, got {count}"
-    assert_eq(len(trainer.replay_buffer), count, "Buffer size after seeding")
+    assert count > 0
+    _assert_eq(len(trainer.replay_buffer), count, "Buffer size after seeding")
     print(f"  Seeded {count} example(s) into buffer")
 
 
-@test("pretrain_supervised() reduces policy loss")
-def _():
-    from rl_agent.dataset_loaders import (
-        generate_builtin_seed_data,
-        convert_to_training_examples,
-    )
+def test_pretrain_supervised_reduces_policy_loss():
+    from rl_agent.dataset_loaders import generate_builtin_seed_data, convert_to_training_examples
+
     ps_list = _make_proof_states()
     traces = generate_builtin_seed_data(
-        proof_states=ps_list,
-        max_traces=3,
-        max_steps_per_trace=5,
-        temperature=0.0,
+        proof_states=ps_list, max_traces=3, max_steps_per_trace=5, temperature=0.0,
     )
     examples = convert_to_training_examples(traces)
 
-    cfg = TrainingConfig(
-        pretrain_on_builtin=False,
-        pretrain_epochs=3,
-        pretrain_batch_size=min(8, len(examples)),
-        pretrain_learning_rate=1e-3,
-    )
+    cfg = TrainingConfig(pretrain_on_builtin=False, pretrain_epochs=3,
+                         pretrain_batch_size=min(8, len(examples)), pretrain_learning_rate=1e-3)
     trainer = SelfPlayTrainer(ps_list, config=cfg)
     trainer.seed_buffer(examples)
 
-    # Get initial loss
-    initial_pi, initial_v = trainer.net.update_weights(
+    initial_pi, _ = trainer.net.update_weights(
         target_policies=[ex.mcts_policy for ex in examples],
         target_values=[ex.outcome for ex in examples],
         state_vecs=[ex.state_vec for ex in examples],
-        lr=1e-8,  # tiny lr to measure loss without updating
+        lr=1e-8,
     )
-
-    # Run pre-training
-    final_pi, final_v = trainer.pretrain_supervised()
-
-    # Policy loss should not increase (network should not diverge)
-    assert final_pi <= initial_pi + 0.5, (
-        f"Policy loss increased: {initial_pi:.4f} -> {final_pi:.4f}"
-    )
+    final_pi, _ = trainer.pretrain_supervised()
+    assert final_pi <= initial_pi + 0.5, f"Policy loss increased: {initial_pi:.4f} -> {final_pi:.4f}"
     print(f"  Pre-training: pi_loss {initial_pi:.4f} -> {final_pi:.4f}")
 
 
-@test("pretrain_supervised() returns valid loss floats")
-def _():
-    from rl_agent.dataset_loaders import (
-        generate_builtin_seed_data,
-        convert_to_training_examples,
-    )
+def test_pretrain_supervised_returns_floats():
+    from rl_agent.dataset_loaders import generate_builtin_seed_data, convert_to_training_examples
+
     ps_list = _make_proof_states()
     traces = generate_builtin_seed_data(
-        proof_states=ps_list,
-        max_traces=2,
-        max_steps_per_trace=5,
-        temperature=0.0,
+        proof_states=ps_list, max_traces=2, max_steps_per_trace=5, temperature=0.0,
     )
     examples = convert_to_training_examples(traces)
 
-    cfg = TrainingConfig(
-        pretrain_on_builtin=False,
-        pretrain_epochs=2,
-        pretrain_batch_size=min(4, len(examples)),
-    )
+    cfg = TrainingConfig(pretrain_on_builtin=False, pretrain_epochs=2,
+                         pretrain_batch_size=min(4, len(examples)))
     trainer = SelfPlayTrainer(ps_list, config=cfg)
     trainer.seed_buffer(examples)
 
     pi_loss, v_loss = trainer.pretrain_supervised()
-    assert isinstance(pi_loss, float), f"pi_loss should be float, got {type(pi_loss)}"
-    assert isinstance(v_loss, float), f"v_loss should be float, got {type(v_loss)}"
-    assert pi_loss >= 0.0, f"pi_loss should be >= 0, got {pi_loss}"
+    assert isinstance(pi_loss, float)
+    assert isinstance(v_loss, float)
+    assert pi_loss >= 0.0
     print(f"  pi_loss={pi_loss:.4f}  v_loss={v_loss:.4f}")
 
 
-@test("pretrain_supervised() with empty buffer returns zeros")
-def _():
+def test_pretrain_supervised_empty_buffer():
     ps_list = _make_proof_states()
     cfg = TrainingConfig(pretrain_on_builtin=False)
     trainer = SelfPlayTrainer(ps_list, config=cfg)
     pi_loss, v_loss = trainer.pretrain_supervised()
-    assert_eq(pi_loss, 0.0, "pi_loss on empty buffer")
-    assert_eq(v_loss, 0.0, "v_loss on empty buffer")
-    print(f"  Empty buffer correctly returns zeros")
+    _assert_eq(pi_loss, 0.0, "pi_loss on empty buffer")
+    _assert_eq(v_loss, 0.0, "v_loss on empty buffer")
 
 
-@test("_auto_seed_and_pretrain() populates buffer and reduces loss")
-def _():
+def test_auto_seed_and_pretrain():
     ps_list = _make_proof_states()
     cfg = TrainingConfig(
-        pretrain_on_builtin=True,
-        pretrain_epochs=2,
-        pretrain_batch_size=8,
-        num_iterations=1,
-        episodes_per_iteration=1,
-        mcts_simulations=5,
+        pretrain_on_builtin=True, pretrain_epochs=2, pretrain_batch_size=8,
+        num_iterations=1, episodes_per_iteration=1, mcts_simulations=5,
     )
     trainer = SelfPlayTrainer(ps_list, config=cfg)
-    assert len(trainer.replay_buffer) == 0, "Buffer should start empty"
+    assert len(trainer.replay_buffer) == 0
 
-    # This triggers the auto seed + pre-training
     trainer.run()
-
-    assert len(trainer.replay_buffer) > 0, "Buffer should be non-empty after auto-seed"
-    assert len(trainer.stats) >= 1, "Stats should have at least 1 entry"
+    assert len(trainer.replay_buffer) > 0
+    assert len(trainer.stats) >= 1
     print(f"  Buffer size after auto-seed: {len(trainer.replay_buffer)}")
 
 
-@test("SelfPlayTrainer with pretrain_on_builtin=True seeds before self-play")
-def _():
-    """When pretrain_on_builtin is True, the buffer should be seeded before
-    the first self-play iteration (visible in the stats)."""
+def test_pretrain_on_builtin_seeds_before_self_play():
     ps_list = _make_proof_states()
     cfg = TrainingConfig(
-        pretrain_on_builtin=True,
-        pretrain_epochs=1,
-        pretrain_batch_size=8,
-        num_iterations=1,
-        episodes_per_iteration=1,
-        mcts_simulations=5,
+        pretrain_on_builtin=True, pretrain_epochs=1, pretrain_batch_size=8,
+        num_iterations=1, episodes_per_iteration=1, mcts_simulations=5,
     )
     trainer = SelfPlayTrainer(ps_list, config=cfg)
     trainer.run()
-    # After one iteration, buffer should be seeded + augmented by self-play
-    assert len(trainer.replay_buffer) > 0, "Buffer should be non-empty"
+    assert len(trainer.replay_buffer) > 0
     if trainer.stats:
-        stat = trainer.stats[0]
-        assert "buffer_size" in stat
-        print(f"  Final buffer size: {stat['buffer_size']}")
+        assert "buffer_size" in trainer.stats[0]
+        print(f"  Final buffer size: {trainer.stats[0]['buffer_size']}")
 
 
-@test("Cold-start pipeline: generate -> seed -> pretrain -> self-play")
-def _():
+def test_cold_start_pipeline():
     """Full end-to-end cold-start pipeline."""
-    from rl_agent.dataset_loaders import (
-        generate_builtin_seed_data,
-        convert_to_training_examples,
-    )
+    from rl_agent.dataset_loaders import generate_builtin_seed_data, convert_to_training_examples
+
     ps_list = _make_proof_states()
     traces = generate_builtin_seed_data(
-        proof_states=ps_list,
-        max_traces=2,
-        max_steps_per_trace=5,
-        temperature=0.0,
+        proof_states=ps_list, max_traces=2, max_steps_per_trace=5, temperature=0.0,
     )
     examples = convert_to_training_examples(traces)
-    assert len(examples) > 0, "Should have training examples"
+    assert len(examples) > 0
 
-    # Seed a fresh trainer
     cfg = TrainingConfig(
-        pretrain_on_builtin=False,
-        pretrain_epochs=2,
-        num_iterations=1,
-        episodes_per_iteration=1,
-        mcts_simulations=5,
+        pretrain_on_builtin=False, pretrain_epochs=2,
+        num_iterations=1, episodes_per_iteration=1, mcts_simulations=5,
     )
     trainer = SelfPlayTrainer(ps_list, config=cfg)
     trainer.seed_buffer(examples)
@@ -959,30 +796,15 @@ def _():
 print("\n-- Section 9: Dataset Parser Units ----------------------------------------")
 
 
-@test("parse_leandojo_trace() with minimal valid JSON")
-def _():
-    import tempfile
-    from rl_agent.dataset_loaders import parse_leandojo_trace, RawProofTrace
+def test_parse_leandojo_trace():
+    from rl_agent.dataset_loaders import parse_leandojo_trace
 
-    # Create a minimal LeanDojo trace
     trace_data = {
         "theorem": "add_comm",
         "result": "proved",
         "traj": [
-            {
-                "state": {
-                    "goal": "a + b = b + a",
-                    "hypotheses": [["a", "ℕ"], ["b", "ℕ"]],
-                },
-                "tactic": "rw [add_comm]"
-            },
-            {
-                "state": {
-                    "goal": "a + b = a + b",
-                    "hypotheses": [["a", "ℕ"], ["b", "ℕ"]],
-                },
-                "tactic": "rfl"
-            },
+            {"state": {"goal": "a + b = b + a", "hypotheses": [["a", "ℕ"], ["b", "ℕ"]]}, "tactic": "rw [add_comm]"},
+            {"state": {"goal": "a + b = a + b", "hypotheses": [["a", "ℕ"], ["b", "ℕ"]]}, "tactic": "rfl"},
         ],
     }
 
@@ -992,7 +814,7 @@ def _():
         path = f.name
     try:
         traces = parse_leandojo_trace(path)
-        assert len(traces) == 1, f"Expected 1 trace, got {len(traces)}"
+        assert len(traces) == 1
         assert traces[0].theorem_name == "add_comm"
         assert len(traces[0].steps) == 2
         assert traces[0].steps[0].tactic == "rw [add_comm]"
@@ -1001,10 +823,8 @@ def _():
     print(f"  Parsed LeanDojo trace with {len(traces[0].steps)} step(s)")
 
 
-@test("load_dataset() auto-infers LeanDojo format from filename")
-def _():
-    import tempfile
-    from rl_agent.dataset_loaders import load_dataset, DatasetFormat
+def test_load_dataset_auto_infers_format():
+    from rl_agent.dataset_loaders import load_dataset
 
     trace_data = [{
         "theorem": "test_thm",
@@ -1012,37 +832,32 @@ def _():
         "traj": [{"state": {"goal": "True"}, "tactic": "trivial"}],
     }]
 
-    with tempfile.NamedTemporaryFile(
-        suffix=".json", prefix="traj_", mode="w", delete=False
-    ) as f:
+    with tempfile.NamedTemporaryFile(suffix=".json", prefix="traj_", mode="w", delete=False) as f:
         import json as j
         j.dump(trace_data, f)
         path = f.name
     try:
         traces = load_dataset(path)
-        assert len(traces) == 1, f"Expected 1 trace, got {len(traces)}"
+        assert len(traces) == 1
     finally:
         os.unlink(path)
-    print(f"  Auto-inferred format from filename: {len(traces)} trace(s)")
+    print(f"  Auto-inferred format: {len(traces)} trace(s)")
 
 
-@test("convert_to_training_examples() handles empty traces gracefully")
-def _():
-    from rl_agent.dataset_loaders import (
-        convert_to_training_examples, RawProofTrace, RawProofStep,
-    )
-    # Empty trace list
-    assert_eq(len(convert_to_training_examples([])), 0, "Empty input")
-    # Trace with no steps
+def test_convert_to_training_examples_empty():
+    from rl_agent.dataset_loaders import convert_to_training_examples, RawProofTrace
+
+    _assert_eq(len(convert_to_training_examples([])), 0, "Empty input")
+
     trace = RawProofTrace(theorem_name="empty", steps=[], outcome=0.0)
     result = convert_to_training_examples([trace])
-    assert_eq(len(result), 0, "Trace with no steps")
-    print(f"  Empty traces handled correctly")
+    _assert_eq(len(result), 0, "Trace with no steps")
+    print("  Empty traces handled correctly")
 
 
-@test("RawProofStep and RawProofTrace dataclasses work correctly")
-def _():
+def test_raw_dataclasses():
     from rl_agent.dataset_loaders import RawProofStep, RawProofTrace
+
     step = RawProofStep(
         state_observation={"theorem": "test"},
         tactic="intro h",
@@ -1060,47 +875,36 @@ def _():
     )
     assert len(trace.steps) == 1
     assert trace.source == "test"
-    print(f"  RawProofStep and RawProofTrace dataclasses work")
+    print("  RawProofStep and RawProofTrace dataclasses work")
 
 
-@test("Integration: parse downloaded miniF2F valid.json")
-def _():
-    """Verify format compatibility between download post-processor and dataset parser."""
-    import tempfile
+def test_parse_minif2f():
     from rl_agent.dataset_loaders import parse_minif2f, convert_to_training_examples
-    from rl_agent import TrainingExample
 
-    # Path to the downloaded miniF2F valid split
     minif2f_path = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         "datasets", "minif2f", "minif2f_valid.json",
     )
     if not os.path.exists(minif2f_path):
-        print(f"  Skipping (miniF2F not downloaded at {minif2f_path})")
+        print("  Skipping (miniF2F not downloaded)")
         return
 
     traces = parse_minif2f(minif2f_path)
-    assert len(traces) > 0, f"Expected > 0 traces, got {len(traces)}"
+    assert len(traces) > 0
     for t in traces:
         assert t.source == "minif2f"
 
-    # Some entries may have empty proofs (e.g., 'by sorry' unsolved); skip those for training
     non_empty = [t for t in traces if len(t.steps) > 0]
-    empty_proofs = len(traces) - len(non_empty)
-    print(f"  {len(traces)} total, {empty_proofs} entries with empty proofs")
-
     examples = convert_to_training_examples(traces)
     if examples:
         for ex in examples:
             assert len(ex.state_vec) == FEATURE_DIM
-            assert_close(sum(ex.mcts_policy), 1.0, tol=1e-6)
+            _assert_close(sum(ex.mcts_policy), 1.0, tol=1e-6)
 
-    print("  Parsed {} miniF2F traces -> {} training examples ({} empty-proof entries)".format(len(traces), len(examples), empty_proofs))
+    print(f"  Parsed {len(traces)} miniF2F traces -> {len(examples)} examples")
 
 
-@test("Integration: parse downloaded ProofNet.jsonl")
-def _():
-    """Verify ProofNet post-processor output is compatible with parse_proofnet."""
+def test_parse_proofnet():
     from rl_agent.dataset_loaders import parse_proofnet, convert_to_training_examples
 
     proofnet_path = os.path.join(
@@ -1108,72 +912,122 @@ def _():
         "datasets", "proofnet", "proofnet.jsonl",
     )
     if not os.path.exists(proofnet_path):
-        print(f"  Skipping (ProofNet not downloaded at {proofnet_path})")
+        print("  Skipping (ProofNet not downloaded)")
         return
 
     traces = parse_proofnet(proofnet_path)
-    assert len(traces) > 0, f"Expected > 0 traces, got {len(traces)}"
+    assert len(traces) > 0
     for t in traces:
         assert t.source == "proofnet"
-
-    # Some entries may have empty proofs; skip those for training
-    non_empty = [t for t in traces if len(t.steps) > 0]
-    empty_proofs = len(traces) - len(non_empty)
-    print(f"  {len(traces)} total, {empty_proofs} entries with empty proofs")
 
     examples = convert_to_training_examples(traces)
     if examples:
         for ex in examples:
             assert len(ex.state_vec) == FEATURE_DIM
-            assert_close(sum(ex.mcts_policy), 1.0, tol=1e-6)
+            _assert_close(sum(ex.mcts_policy), 1.0, tol=1e-6)
 
-    print("  Parsed {} ProofNet traces -> {} training examples ({} empty-proof entries)".format(len(traces), len(examples), empty_proofs))
+    print(f"  Parsed {len(traces)} ProofNet traces -> {len(examples)} examples")
 
 
-@test("Integration: load_dataset() dispatches correctly for downloaded formats")
-def _():
-    """Test load_dataset() auto-infers format for each downloaded dataset."""
+def test_load_dataset_dispatches_correctly():
     from rl_agent.dataset_loaders import load_dataset, DatasetFormat
 
     base = os.path.dirname(os.path.abspath(__file__))
+    datasets = [
+        ("miniF2F", os.path.join(base, "datasets", "minif2f", "minif2f_valid.json")),
+        ("ProofNet", os.path.join(base, "datasets", "proofnet", "proofnet.jsonl")),
+        ("Lean Workbook", os.path.join(base, "datasets", "lean_workbook", "lean_workbook.json")),
+    ]
+    for name, path in datasets:
+        if os.path.exists(path):
+            traces = load_dataset(path)
+            assert len(traces) > 0
+            print(f"  {name}: {len(traces)} traces")
 
-    # miniF2F
-    m_path = os.path.join(base, "datasets", "minif2f", "minif2f_valid.json")
-    if os.path.exists(m_path):
-        traces = load_dataset(m_path)
-        assert len(traces) > 0
-        print(f"  miniF2F: load_dataset() returned {len(traces)} traces")
-
-    # ProofNet
-    p_path = os.path.join(base, "datasets", "proofnet", "proofnet.jsonl")
-    if os.path.exists(p_path):
-        traces = load_dataset(p_path)
-        assert len(traces) > 0
-        print(f"  ProofNet: load_dataset() returned {len(traces)} traces")
-
-    # Lean Workbook
-    w_path = os.path.join(base, "datasets", "lean_workbook", "lean_workbook.json")
-    if os.path.exists(w_path):
-        traces = load_dataset(w_path, format=DatasetFormat.LEAN_WORKBOOK)
-        assert len(traces) > 0
-        print(f"  Lean Workbook: load_dataset() returned {len(traces)} traces")
-
-    print(f"  All format auto-detection tests passed")
+    print("  All format auto-detection tests passed")
 
 
-# -- Summary ---------------------------------------------------------------------
+if __name__ == "__main__":
+    # Run each test function
+    test_functions = [
+        ("encode returns list", test_encode_returns_list),
+        ("FEATURE_DIM == 256", test_feature_dim),
+        ("encode all floats", test_encode_all_floats),
+        ("encode global scalars in range", test_encode_global_scalars_in_range),
+        ("encode tactic bag in range", test_encode_tactic_bag_in_range),
+        ("different states differ", test_encode_different_states_differ),
+        ("encode empty state", test_encode_empty_state),
+        ("encode deterministic", test_encode_deterministic),
+        ("network initialization", test_network_initialization),
+        ("network forward shapes", test_network_forward_shapes),
+        ("priors sum to one", test_priors_sum_to_one),
+        ("priors in range", test_priors_in_range),
+        ("value in range", test_value_in_range),
+        ("update weights returns floats", test_update_weights_returns_floats),
+        ("update weights reduces loss", test_update_weights_reduces_loss),
+        ("save/load round trip", test_save_load_round_trip),
+        ("tactic simulator returns tuple", test_tactic_simulator_returns_tuple),
+        ("tactic simulator reward in range", test_tactic_simulator_reward_in_range),
+        ("MCTS node UCB finite", test_mcts_node_ucb_finite),
+        ("MCTS node UCB unvisited", test_mcts_node_ucb_unvisited),
+        ("MCTS search returns valid probs", test_mcts_search_returns_valid_probs),
+        ("MCTS root value in range", test_mcts_root_value_in_range),
+        ("MCTS best action valid", test_mcts_best_action_is_valid),
+        ("MCTS expand creates children", test_mcts_expand_creates_children),
+        ("MCTS more simulations affects probs", test_mcts_more_simulations_affects_probs),
+        ("run episode returns EpisodeResult", test_run_episode_returns_episode_result),
+        ("episode outcome is valid", test_episode_outcome_is_valid),
+        ("episode examples correct vec length", test_episode_examples_have_correct_vec_length),
+        ("episode examples policy sums to one", test_episode_examples_policy_sums_to_one),
+        ("episode examples same outcome", test_episode_examples_have_same_outcome),
+        ("run episode temperature zero", test_run_episode_temperature_zero),
+        ("trainer initialization", test_trainer_initialization),
+        ("trainer run returns network", test_trainer_run_returns_network),
+        ("trainer accumulates buffer", test_trainer_accumulates_buffer),
+        ("trainer records stats", test_trainer_records_stats),
+        ("trainer saves checkpoints", test_trainer_saves_checkpoints),
+        ("train from source", test_train_from_source),
+        ("train from source multi-function", test_train_from_source_multi_function),
+        ("pipeline source to encoded", test_pipeline_source_to_encoded),
+        ("pipeline network forward", test_pipeline_network_forward),
+        ("pipeline MCTS search", test_pipeline_mcts_search),
+        ("pipeline self-play episode", test_pipeline_self_play_episode),
+        ("generate builtin seed data", test_generate_builtin_seed_data_returns_traces),
+        ("generate builtin seed data produces steps", test_generate_builtin_seed_data_produces_steps),
+        ("convert to training examples", test_convert_to_training_examples),
+        ("convert to training examples policies", test_convert_to_training_examples_policies),
+        ("convert with MCTS policy smoothing", test_convert_with_mcts_policy_smoothing),
+        ("seed data save/load round trip", test_seed_data_save_load_round_trip),
+        ("seed buffer populates", test_seed_buffer_populates),
+        ("pretrain supervised reduces loss", test_pretrain_supervised_reduces_policy_loss),
+        ("pretrain supervised returns floats", test_pretrain_supervised_returns_floats),
+        ("pretrain supervised empty buffer", test_pretrain_supervised_empty_buffer),
+        ("auto seed and pretrain", test_auto_seed_and_pretrain),
+        ("pretrain on builtin seeds before self-play", test_pretrain_on_builtin_seeds_before_self_play),
+        ("cold start pipeline", test_cold_start_pipeline),
+        ("parse LeanDojo trace", test_parse_leandojo_trace),
+        ("load dataset auto-infers format", test_load_dataset_auto_infers_format),
+        ("convert empty traces", test_convert_to_training_examples_empty),
+        ("raw dataclasses", test_raw_dataclasses),
+        ("parse miniF2F", test_parse_minif2f),
+        ("parse ProofNet", test_parse_proofnet),
+        ("load dataset dispatches correctly", test_load_dataset_dispatches_correctly),
+    ]
 
-print(f"\n{'='*60}")
-total = PASS + FAIL
-print(f"Phase 3 Results: {PASS}/{total} tests passing")
-print(f"{'='*60}")
+    for name, fn in test_functions:
+        _run_test(name, fn)
 
-if FAIL:
-    print(f"\nFailed tests:")
-    for r in results:
-        if r[0] == "FAIL":
-            print(f"  FAIL  {r[1]}: {r[2]}")
-    sys.exit(1)
-else:
-    print("\nAll Phase 3 tests pass!")
-    sys.exit(0)
+    print(f"\n{'='*60}")
+    total = PASS + FAIL
+    print(f"Phase 3 Results: {PASS}/{total} tests passing")
+    print(f"{'='*60}")
+
+    if FAIL:
+        print(f"\nFailed tests:")
+        for r in results:
+            if r[0] == "FAIL":
+                print(f"  FAIL  {r[1]}: {r[2]}")
+        sys.exit(1)
+    else:
+        print("\nAll Phase 3 tests pass!")
+        sys.exit(0)

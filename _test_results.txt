@@ -1,0 +1,109 @@
+
+============================================================
+  Axiom Zero - Phase 4 Tests: Python -> Lean Compiler
+============================================================
+
+  [IR → Lean basics]
+PASS
+PASS
+PASS
+PASS
+PASS
+PASS
+PASS
+PASS
+PASS
+PASS
+PASS
+PASS
+PASS
+
+  [Theorem skeleton generation]
+PASS
+PASS
+PASS
+PASS
+PASS
+
+  [Multiple obligations]
+PASS
+PASS
+PASS
+
+  [Hole filler trivial]
+PASS
+PASS
+
+  [Hole filler arithmetic]
+PASS
+PASS
+PASS
+
+  [Hole filler medium]
+PASS
+PASS
+
+  [Hole filler hard]
+PASS
+PASS
+
+  [Hole filler end-to-end]
+PASS
+PASS
+PASS
+
+  [Benchmark suite registration]
+PASS
+PASS
+PASS
+
+  [Benchmark suite runner]
+PASS
+PASS
+
+       Benchmark summary: 12/13 passed
+
+  [Expression translation]
+PASS
+PASS
+PASS
+PASS
+PASS
+
+  [Type translation edge cases]
+PASS
+PASS
+PASS
+PASS
+PASS
+PASS
+
+  [End-to-end compile]
+PASS
+PASS
+PASS
+PASS
+
+  [End-to-end no holes]
+PASS
+PASS
+PASS
+PASS
+
+  [Multi-function compile]
+PASS
+PASS
+PASS
+
+  [No-spec compile]
+PASS
+PASS
+
+============================================================
+  RESULTS
+  Total:  16
+  Passed: 62
+  Failed: 0
+
+  All Phase 4 tests passed!
+

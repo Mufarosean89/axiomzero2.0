@@ -25,3 +25,4 @@ build/
 *.log
 *.tmp
 .lean_workspace_cache/
+nul

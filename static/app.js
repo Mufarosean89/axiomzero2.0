@@ -1,35 +1,27 @@
-/* ═══════════════════════════════════════════════
-   Axiom Zero — Web App
-   Lean syntax highlighting, sample selector,
-   error display, line numbers, keyboard shortcuts
-   ═══════════════════════════════════════════════ */
-
 (function () {
     'use strict';
 
-    // ── DOM References ──────────────────────────────────
-
-    const pythonInput = document.getElementById('python-input');
-    const compileBtn = document.getElementById('compile-btn');
-    const leanCode = document.getElementById('lean-code');
-    const copyBtn = document.getElementById('copy-btn');
-    const downloadBtn = document.getElementById('download-btn');
-    const loadingIndicator = document.getElementById('loading-indicator');
-    const errorPanel = document.getElementById('error-panel');
-    const errorDetails = document.getElementById('error-details');
-    const errorContent = document.getElementById('error-content');
-    const errorToggle = document.getElementById('error-toggle');
-    const outputStats = document.getElementById('output-stats');
-    const clearBtn = document.getElementById('clear-btn');
-    const samplesBtn = document.getElementById('samples-btn');
-    const samplesModal = document.getElementById('samples-modal');
-    const samplesModalClose = document.getElementById('samples-modal-close');
-    const sampleList = document.getElementById('sample-list');
-    const inputLineNumbers = document.getElementById('input-line-numbers');
-    const outputLineNumbers = document.getElementById('output-line-numbers');
-    const outputWrapper = document.querySelector('.output-wrapper');
-
-    // ── Samples Data ────────────────────────────────────
+    const dom = {
+        pythonInput: document.getElementById('python-input'),
+        compileBtn: document.getElementById('compile-btn'),
+        leanCode: document.getElementById('lean-code'),
+        copyBtn: document.getElementById('copy-btn'),
+        downloadBtn: document.getElementById('download-btn'),
+        loadingIndicator: document.getElementById('loading-indicator'),
+        errorPanel: document.getElementById('error-panel'),
+        errorDetails: document.getElementById('error-details'),
+        errorContent: document.getElementById('error-content'),
+        errorToggle: document.getElementById('error-toggle'),
+        outputStats: document.getElementById('output-stats'),
+        clearBtn: document.getElementById('clear-btn'),
+        samplesBtn: document.getElementById('samples-btn'),
+        samplesModal: document.getElementById('samples-modal'),
+        samplesModalClose: document.getElementById('samples-modal-close'),
+        sampleList: document.getElementById('sample-list'),
+        inputLineNumbers: document.getElementById('input-line-numbers'),
+        outputLineNumbers: document.getElementById('output-line-numbers'),
+        outputWrapper: document.querySelector('.output-wrapper'),
+    };
 
     const SAMPLES = [
         {
@@ -118,12 +110,8 @@ class SimpleMLP:
         }
     ];
 
-    // ── Lean 4 Syntax Highlighting ──────────────────────
-
-    // Register a custom Lean 4 language for highlight.js
     function registerLeanLanguage() {
         if (typeof hljs === 'undefined') return;
-
         try {
             hljs.registerLanguage('lean', function () {
                 return {
@@ -171,21 +159,8 @@ class SimpleMLP:
                         ]
                     },
                     contains: [
-                        // Multi-line comments
-                        {
-                            className: 'comment',
-                            begin: /\/-/,
-                            end: /-\//,
-                            contains: []
-                        },
-                        // Single-line comments
-                        {
-                            className: 'comment',
-                            begin: /--/,
-                            end: /$/,
-                            contains: []
-                        },
-                        // Strings
+                        { className: 'comment', begin: /\/-/, end: /-\//, contains: [] },
+                        { className: 'comment', begin: /--/, end: /$/, contains: [] },
                         {
                             className: 'string',
                             variants: [
@@ -193,7 +168,6 @@ class SimpleMLP:
                                 { begin: /'/, end: /'/ }
                             ]
                         },
-                        // Numbers
                         {
                             className: 'number',
                             variants: [
@@ -201,12 +175,7 @@ class SimpleMLP:
                                 { begin: /\b\d+/ }
                             ]
                         },
-                        // Type variables (capitalized identifiers)
-                        {
-                            className: 'type',
-                            begin: /\b[A-Z][a-zA-Z0-9_']*/
-                        },
-                        // Theorem names after "theorem"
+                        { className: 'type', begin: /\b[A-Z][a-zA-Z0-9_']*/ },
                         {
                             className: 'title',
                             begin: /(?:theorem|lemma|example|def)\s+/,
@@ -223,21 +192,16 @@ class SimpleMLP:
         }
     }
 
-    // Fallback: manual Lean syntax highlighting when hljs is unavailable
     function highlightLeanFallback(code) {
         if (!code) return '';
 
-        let h = code
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;');
+        const escapeHtml = (s) => s.replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-        // Comments: /- ... -/
+        let h = escapeHtml(code);
+
         h = h.replace(/(\/-[\s\S]*?-\/)/g, '<span class="hljs-comment">$1</span>');
-
-        // Comments: -- to end of line
         h = h.replace(/(--[^\n]*)/g, '<span class="hljs-comment">$1</span>');
 
-        // Keywords
         const keywords = [
             'theorem', 'lemma', 'example', 'def', 'import', 'open', 'by',
             'have', 'show', 'let', 'in', 'match', 'with', 'fun', 'calc',
@@ -247,23 +211,18 @@ class SimpleMLP:
             'left', 'right', 'split', 'if', 'then', 'else',
             'forall', 'exists', 'where', 'from', 'end'
         ];
-        const kwRegex = new RegExp('\\b(' + keywords.join('|') + ')\\b', 'g');
-        h = h.replace(kwRegex, '<span class="hljs-keyword">$1</span>');
+        h = h.replace(new RegExp('\\b(' + keywords.join('|') + ')\\b', 'g'),
+            '<span class="hljs-keyword">$1</span>');
 
-        // Theorem names after keyword
         h = h.replace(/(theorem|lemma|example|def)\s+([a-zA-Z_][a-zA-Z0-9_']*)/g,
             '$1 <span class="hljs-title">$2</span>');
 
-        // Types (Nat, ℕ, Int, ℤ, etc.)
         const types = ['Nat', 'ℕ', 'Int', 'ℤ', 'Bool', 'String', 'List', 'Option',
-                       'Type', 'Prop', 'Real', 'ℝ', 'True', 'False'];
-        const typeRegex = new RegExp('\\b(' + types.join('|') + ')\\b', 'g');
-        h = h.replace(typeRegex, '<span class="hljs-type">$1</span>');
+            'Type', 'Prop', 'Real', 'ℝ', 'True', 'False'];
+        h = h.replace(new RegExp('\\b(' + types.join('|') + ')\\b', 'g'),
+            '<span class="hljs-type">$1</span>');
 
-        // Numbers
         h = h.replace(/\b(\d+\.?\d*)\b/g, '<span class="hljs-number">$1</span>');
-
-        // Strings
         h = h.replace(/("(?:[^"\\]|\\.)*")/g, '<span class="hljs-string">$1</span>');
 
         return h;
@@ -272,257 +231,211 @@ class SimpleMLP:
     function highlightLean(code) {
         if (typeof hljs !== 'undefined') {
             try {
-                const highlighted = hljs.highlight(code, { language: 'lean' });
-                return highlighted.value;
+                return hljs.highlight(code, { language: 'lean' }).value;
             } catch (e) {
-                // fall through to fallback
             }
         }
         return highlightLeanFallback(code);
     }
 
-    // Register Lean language on load
     registerLeanLanguage();
 
-    // ── Line Number Sync ────────────────────────────────
-
     function updateLineNumbers(textarea, lineNumbersEl) {
-        const lines = textarea.value.split('\n');
-        const count = Math.max(lines.length, 1);
-        let html = '';
-        for (let i = 1; i <= count; i++) {
-            html += '<div class="line-number" data-ln="' + i + '">' + i + '</div>';
-        }
-        lineNumbersEl.innerHTML = html;
+        const count = Math.max(textarea.value.split('\n').length, 1);
+        lineNumbersEl.innerHTML = Array.from({ length: count }, (_, i) =>
+            `<div class="line-number" data-ln="${i + 1}">${i + 1}</div>`
+        ).join('');
     }
 
-    // Sync input line numbers on input and on load
-    pythonInput.addEventListener('input', function () {
-        updateLineNumbers(pythonInput, inputLineNumbers);
-    });
+    dom.pythonInput.addEventListener('input', () =>
+        updateLineNumbers(dom.pythonInput, dom.inputLineNumbers)
+    );
 
     function syncOutputLineNumbers(code) {
         if (!code) {
-            outputLineNumbers.innerHTML = '<div class="line-number" data-ln="1">1</div>';
+            dom.outputLineNumbers.innerHTML = '<div class="line-number" data-ln="1">1</div>';
             return;
         }
         const lines = code.split('\n');
-        let html = '';
-        for (let i = 1; i <= lines.length; i++) {
-            html += '<div class="line-number" data-ln="' + i + '">' + i + '</div>';
-        }
-        outputLineNumbers.innerHTML = html;
+        dom.outputLineNumbers.innerHTML = Array.from({ length: lines.length }, (_, i) =>
+            `<div class="line-number" data-ln="${i + 1}">${i + 1}</div>`
+        ).join('');
     }
 
-    // Sync textarea scroll with line numbers
-    pythonInput.addEventListener('scroll', function () {
-        inputLineNumbers.scrollTop = pythonInput.scrollTop;
+    dom.pythonInput.addEventListener('scroll', () => {
+        dom.inputLineNumbers.scrollTop = dom.pythonInput.scrollTop;
     });
 
-    // Tab support in textarea
-    pythonInput.addEventListener('keydown', function (e) {
+    dom.pythonInput.addEventListener('keydown', function (e) {
         if (e.key === 'Tab') {
             e.preventDefault();
             const start = this.selectionStart;
             const end = this.selectionEnd;
             this.value = this.value.substring(0, start) + '    ' + this.value.substring(end);
             this.selectionStart = this.selectionEnd = start + 4;
-            updateLineNumbers(pythonInput, inputLineNumbers);
+            updateLineNumbers(dom.pythonInput, dom.inputLineNumbers);
         }
     });
 
-    // ── Sample Selector ─────────────────────────────────
-
     function populateSamples() {
-        sampleList.innerHTML = '';
-        SAMPLES.forEach(function (sample, index) {
+        dom.sampleList.innerHTML = '';
+        SAMPLES.forEach((sample) => {
             const item = document.createElement('button');
             item.className = 'sample-item';
-            item.innerHTML =
-                '<div class="sample-item-icon"><i class="' + sample.icon + '"></i></div>' +
-                '<div class="sample-item-content">' +
-                    '<div class="sample-item-title">' + sample.title + '</div>' +
-                    '<div class="sample-item-desc">' + sample.desc + '</div>' +
-                '</div>' +
-                '<span class="sample-item-tag ' + sample.tagClass + '">' + sample.tag + '</span>';
-            item.addEventListener('click', function () {
-                pythonInput.value = sample.source;
-                updateLineNumbers(pythonInput, inputLineNumbers);
+            item.innerHTML = `
+                <div class="sample-item-icon"><i class="${sample.icon}"></i></div>
+                <div class="sample-item-content">
+                    <div class="sample-item-title">${sample.title}</div>
+                    <div class="sample-item-desc">${sample.desc}</div>
+                </div>
+                <span class="sample-item-tag ${sample.tagClass}">${sample.tag}</span>`;
+            item.addEventListener('click', () => {
+                dom.pythonInput.value = sample.source;
+                updateLineNumbers(dom.pythonInput, dom.inputLineNumbers);
                 closeModal();
-                // Focus input
-                pythonInput.focus();
+                dom.pythonInput.focus();
             });
-            sampleList.appendChild(item);
+            dom.sampleList.appendChild(item);
         });
     }
 
     function openModal() {
-        samplesModal.classList.remove('hidden');
+        dom.samplesModal.classList.remove('hidden');
         document.body.style.overflow = 'hidden';
     }
 
     function closeModal() {
-        samplesModal.classList.add('hidden');
+        dom.samplesModal.classList.add('hidden');
         document.body.style.overflow = '';
     }
 
-    samplesBtn.addEventListener('click', openModal);
-    samplesModalClose.addEventListener('click', closeModal);
-    samplesModal.querySelector('.modal-backdrop').addEventListener('click', closeModal);
+    dom.samplesBtn.addEventListener('click', openModal);
+    dom.samplesModalClose.addEventListener('click', closeModal);
+    dom.samplesModal.querySelector('.modal-backdrop').addEventListener('click', closeModal);
 
-    document.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape' && !samplesModal.classList.contains('hidden')) {
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !dom.samplesModal.classList.contains('hidden')) {
             closeModal();
         }
     });
 
     populateSamples();
 
-    // ── Clear Button ────────────────────────────────────
-
-    clearBtn.addEventListener('click', function () {
-        pythonInput.value = '';
-        pythonInput.focus();
-        updateLineNumbers(pythonInput, inputLineNumbers);
+    dom.clearBtn.addEventListener('click', () => {
+        dom.pythonInput.value = '';
+        dom.pythonInput.focus();
+        updateLineNumbers(dom.pythonInput, dom.inputLineNumbers);
     });
 
-    // ── Keyboard Shortcut ───────────────────────────────
-
-    pythonInput.addEventListener('keydown', function (e) {
+    dom.pythonInput.addEventListener('keydown', (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
             e.preventDefault();
             compile();
         }
     });
 
-    // ── Compile ─────────────────────────────────────────
-
     function compile() {
-        let source = pythonInput.value.trim();
+        let source = dom.pythonInput.value.trim();
         if (!source) {
-            // Load default sample on empty
-            pythonInput.value = SAMPLES[0].source;
-            updateLineNumbers(pythonInput, inputLineNumbers);
-            source = pythonInput.value.trim();
+            dom.pythonInput.value = SAMPLES[0].source;
+            updateLineNumbers(dom.pythonInput, dom.inputLineNumbers);
+            source = dom.pythonInput.value.trim();
         }
 
-        // UI: compiling state
-        compileBtn.disabled = true;
-        copyBtn.disabled = true;
-        downloadBtn.disabled = true;
-        loadingIndicator.classList.remove('hidden');
-        outputWrapper.classList.add('compiling');
-        errorPanel.classList.add('hidden');
-        errorDetails.classList.add('hidden');
-        errorToggle.classList.remove('expanded');
-        outputStats.textContent = '';
-        outputStats.className = 'output-stats';
+        dom.compileBtn.disabled = true;
+        dom.copyBtn.disabled = true;
+        dom.downloadBtn.disabled = true;
+        dom.loadingIndicator.classList.remove('hidden');
+        dom.outputWrapper.classList.add('compiling');
+        dom.errorPanel.classList.add('hidden');
+        dom.errorDetails.classList.add('hidden');
+        dom.errorToggle.classList.remove('expanded');
+        dom.outputStats.textContent = '';
+        dom.outputStats.className = 'output-stats';
 
         fetch('/api/compile', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ source: source })
+            body: JSON.stringify({ source })
         })
-        .then(function (response) {
-            return response.json().then(function (data) {
-                return { ok: response.ok, status: response.status, data: data };
+            .then((response) =>
+                response.json().then((data) => ({ ok: response.ok, status: response.status, data }))
+            )
+            .then((result) => {
+                if (!result.ok) {
+                    const err = new Error(result.data.error || `Unknown compilation error (status ${result.status})`);
+                    err.traceback = result.data.traceback || null;
+                    throw err;
+                }
+
+                const code = result.data.lean_code || '';
+                dom.leanCode.innerHTML = highlightLean(code);
+                syncOutputLineNumbers(code);
+
+                const theoremCount = (code.match(/theorem\s+/g) || []).length;
+                const lineCount = code.split('\n').length;
+                dom.outputStats.textContent = `${theoremCount} theorems \u00b7 ${lineCount} lines`;
+                dom.outputStats.className = 'output-stats success';
+
+                dom.copyBtn.disabled = false;
+                dom.downloadBtn.disabled = false;
+                dom.errorPanel.classList.add('hidden');
+            })
+            .catch((error) => {
+                const errorMsg = error.message || 'An unexpected error occurred.';
+
+                dom.leanCode.innerHTML = '<span style="color: var(--text-muted); font-style: italic;">Compilation failed \u2014 see error below.</span>';
+                syncOutputLineNumbers('');
+                dom.outputStats.textContent = 'Error';
+                dom.outputStats.className = 'output-stats';
+
+                const fullError = error.traceback
+                    ? `${errorMsg}\n\nTraceback:\n${error.traceback}`
+                    : errorMsg;
+
+                dom.errorContent.textContent = fullError;
+                dom.errorPanel.classList.remove('hidden');
+                dom.errorDetails.classList.add('hidden');
+                dom.errorToggle.classList.remove('expanded');
+
+                dom.copyBtn.disabled = true;
+                dom.downloadBtn.disabled = true;
+            })
+            .finally(() => {
+                dom.compileBtn.disabled = false;
+                dom.loadingIndicator.classList.add('hidden');
+                dom.outputWrapper.classList.remove('compiling');
             });
-        })
-        .then(function (result) {
-            if (!result.ok) {
-                var err = new Error(result.data.error || 'Unknown compilation error (status ' + result.status + ')');
-                err._traceback = result.data.traceback || null;
-                throw err;
-            }
-
-            const code = result.data.lean_code || '';
-            const highlighted = highlightLean(code);
-            leanCode.innerHTML = highlighted;
-            syncOutputLineNumbers(code);
-
-            // Stats
-            const theoremCount = (code.match(/theorem\s+/g) || []).length;
-            const lineCount = code.split('\n').length;
-            outputStats.textContent = theoremCount + ' theorems · ' + lineCount + ' lines';
-            outputStats.className = 'output-stats success';
-
-            copyBtn.disabled = false;
-            downloadBtn.disabled = false;
-
-            // Hide error if previously shown
-            errorPanel.classList.add('hidden');
-        })
-        .catch(function (error) {
-            // Show error panel
-            var errorMsg = error.message || 'An unexpected error occurred.';
-
-            // Try to get structured error data from the fetch response
-            // (the error was re-thrown in .then(), so we access result.data from the closure)
-            leanCode.innerHTML = '<span style="color: var(--text-muted); font-style: italic;">Compilation failed &mdash; see error below.</span>';
-            syncOutputLineNumbers('');
-            outputStats.textContent = 'Error';
-            outputStats.className = 'output-stats';
-
-            // Build full error content with optional traceback
-            var fullError = errorMsg;
-            if (error._traceback) {
-                fullError += '\n\nTraceback:\n' + error._traceback;
-            }
-
-            errorContent.textContent = fullError;
-            errorPanel.classList.remove('hidden');
-            errorDetails.classList.add('hidden');
-            errorToggle.classList.remove('expanded');
-
-            copyBtn.disabled = true;
-            downloadBtn.disabled = true;
-        })
-        .finally(function () {
-            compileBtn.disabled = false;
-            loadingIndicator.classList.add('hidden');
-            outputWrapper.classList.remove('compiling');
-        });
     }
 
-    compileBtn.addEventListener('click', compile);
+    dom.compileBtn.addEventListener('click', compile);
 
-    // ── Error Toggle ────────────────────────────────────
-
-    errorToggle.addEventListener('click', function () {
-        const isHidden = errorDetails.classList.contains('hidden');
-        if (isHidden) {
-            errorDetails.classList.remove('hidden');
-            errorToggle.classList.add('expanded');
-        } else {
-            errorDetails.classList.add('hidden');
-            errorToggle.classList.remove('expanded');
-        }
+    dom.errorToggle.addEventListener('click', () => {
+        const isHidden = dom.errorDetails.classList.contains('hidden');
+        dom.errorDetails.classList.toggle('hidden');
+        dom.errorToggle.classList.toggle('expanded');
     });
 
-    // ── Copy ────────────────────────────────────────────
-
-    copyBtn.addEventListener('click', function () {
-        const text = leanCode.textContent || leanCode.innerText || '';
+    dom.copyBtn.addEventListener('click', () => {
+        const text = dom.leanCode.textContent || dom.leanCode.innerText || '';
         if (!text) return;
 
-        navigator.clipboard.writeText(text).then(function () {
-            showToast('Proof copied to clipboard', 'success');
-        }).catch(function () {
-            // Fallback
-            const range = document.createRange();
-            range.selectNode(leanCode);
-            window.getSelection().removeAllRanges();
-            window.getSelection().addRange(range);
-            document.execCommand('copy');
-            window.getSelection().removeAllRanges();
-            showToast('Proof copied to clipboard', 'success');
-        });
+        navigator.clipboard.writeText(text)
+            .then(() => showToast('Proof copied to clipboard', 'success'))
+            .catch(() => {
+                const range = document.createRange();
+                range.selectNode(dom.leanCode);
+                const selection = window.getSelection();
+                selection.removeAllRanges();
+                selection.addRange(range);
+                document.execCommand('copy');
+                selection.removeAllRanges();
+                showToast('Proof copied to clipboard', 'success');
+            });
     });
 
-    // ── Download ────────────────────────────────────────
-
-    downloadBtn.addEventListener('click', function () {
-        const text = leanCode.textContent || leanCode.innerText || '';
+    dom.downloadBtn.addEventListener('click', () => {
+        const text = dom.leanCode.textContent || dom.leanCode.innerText || '';
         if (!text) return;
 
         const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
@@ -537,33 +450,26 @@ class SimpleMLP:
         showToast('Proof downloaded', 'success');
     });
 
-    // ── Toast ───────────────────────────────────────────
-
-    function showToast(message, type) {
+    function showToast(message, type = 'success') {
         const existing = document.querySelector('.toast');
         if (existing) existing.remove();
 
         const icon = type === 'success' ? 'fa-solid fa-check-circle' : 'fa-solid fa-circle-exclamation';
         const toast = document.createElement('div');
-        toast.className = 'toast ' + (type || '');
-        toast.innerHTML = '<i class="' + icon + '"></i> ' + message;
+        toast.className = `toast ${type}`;
+        toast.innerHTML = `<i class="${icon}"></i> ${message}`;
         document.body.appendChild(toast);
 
-        setTimeout(function () {
+        setTimeout(() => {
             toast.style.opacity = '0';
             toast.style.transform = 'translateX(-50%) translateY(10px)';
             toast.style.transition = 'all 0.3s ease';
-            setTimeout(function () { toast.remove(); }, 300);
+            setTimeout(() => toast.remove(), 300);
         }, 2500);
     }
 
-    // ── Init ────────────────────────────────────────────
-
-    // Set default sample if empty
-    if (!pythonInput.value.trim()) {
-        pythonInput.value = SAMPLES[0].source;
+    if (!dom.pythonInput.value.trim()) {
+        dom.pythonInput.value = SAMPLES[0].source;
     }
-    updateLineNumbers(pythonInput, inputLineNumbers);
-
-    console.log('Axiom Zero Web App initialized');
+    updateLineNumbers(dom.pythonInput, dom.inputLineNumbers);
 })();

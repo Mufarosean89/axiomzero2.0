@@ -1,26 +1,13 @@
-"""
-Axiom Zero - State Encoder
-Phase 3: RL Agent
+"""State encoder: converts ProofState observation dicts to 256-dim feature vectors.
 
-Converts a ProofState observation dict (from ProofState.to_observation()) into
-a fixed-size numeric feature vector that the policy and value networks consume.
-
-Design
-------
-We keep this pure Python / stdlib — no numpy, no torch — so the encoder can
-run anywhere Phases 1 & 2 run.  The networks (networks.py) use the same
-convention: vectors are plain List[float].
-
-Feature layout (FEATURE_DIM = 256):
+Feature layout:
   [0:8]    Global proof scalars (normalised)
-  [8:47]   Tactic-history bag (39-dim, count of each tactic used, capped at 5)
-  [47:87]  Goal-type character n-gram hash (40-dim)
-  [87:127] Hypothesis-name bag (40-dim)
-  [127:167] Hypothesis-type n-gram hash (40-dim)
-  [167:206] Second goal features (same 39-dim tactic bag for goal 2, if any)
-  [206:256] Padding / future use (zeros)
+  [8:47]   Tactic-history bag (39-dim, count of each tactic, capped at 5)
+  [47:126] Primary goal features (type n-gram + hypothesis encoding, 79-dim)
+  [126:205] Secondary goal features (same structure, 79-dim)
+  [205:256] Padding / future use (zeros)
 
-Total: 256 floats.
+Pure Python / stdlib — no numpy or torch.
 """
 
 from __future__ import annotations

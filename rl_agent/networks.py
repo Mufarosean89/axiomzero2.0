@@ -1,31 +1,10 @@
-"""
-Axiom Zero - Policy & Value Networks
-Phase 3: RL Agent
+"""Policy & Value Networks: pure-Python MLP (no numpy/torch).
 
-Pure-Python MLP implementation (no numpy / torch / external deps).
-Weights are stored as nested List[List[float]] and List[float].
+Architecture: FEATURE_DIM → 128 (ReLU) → 64 (ReLU) → policy_head (softmax, 39)
+                                                      → value_head (tanh, 1)
 
-Architecture
-------------
-Both networks share an identical backbone (2 hidden layers, ReLU).
-The heads diverge:
-  - Policy head: softmax over NUM_ACTIONS (=39, one per CORE_TACTIC)
-  - Value  head: tanh scalar in [-1, +1]
-
-Backbone: FEATURE_DIM → 128 → 64
-Policy head:            64  → NUM_ACTIONS  (softmax)
-Value  head:            64  → 1            (tanh)
-
-This is deliberately lightweight — the focus is on the MCTS / self-play
-loop correctness; the networks can be swapped for PyTorch equivalents later.
-
-Usage
------
-    from rl_agent.networks import PolicyValueNet
-    net = PolicyValueNet()          # random init
-    priors, value = net.forward(state_vector)   # List[float], float
-    net.save("checkpoint.json")
-    net2 = PolicyValueNet.load("checkpoint.json")
+Lightweight implementation for correctness testing of MCTS/self-play;
+swap for PyTorch equivalents in production.
 """
 
 from __future__ import annotations
@@ -90,16 +69,7 @@ def _he_init(out_dim: int, in_dim: int) -> Tuple[List[List[float]], List[float]]
 # ── Network ──────────────────────────────────────────────────────────────────
 
 class PolicyValueNet:
-    """
-    Shared-trunk policy + value network.
-
-    Attributes
-    ----------
-    W1, b1 : backbone layer 1  (FEATURE_DIM → HIDDEN1)
-    W2, b2 : backbone layer 2  (HIDDEN1 → HIDDEN2)
-    Wp, bp : policy head        (HIDDEN2 → NUM_ACTIONS)
-    Wv, bv : value  head        (HIDDEN2 → 1)
-    """
+    """Shared-trunk policy + value network with manual backprop."""
 
     def __init__(self, num_actions: int | None = None) -> None:
         na = num_actions or _get_num_actions()
@@ -115,17 +85,7 @@ class PolicyValueNet:
         return h2
 
     def forward(self, state_vec: List[float]) -> Tuple[List[float], float]:
-        """
-        Forward pass.
-
-        Args:
-            state_vec: Float vector of length FEATURE_DIM.
-
-        Returns:
-            (priors, value)
-            priors : List[float] length NUM_ACTIONS, sums to 1.0 (softmax)
-            value  : float in [-1, 1] (tanh)
-        """
+        """Forward pass: returns (priors, value) — softmax policy + tanh value."""
         h = self._backbone(state_vec)
         logits = _linear(h, self.Wp, self.bp)
         priors = _softmax(logits)
@@ -142,23 +102,7 @@ class PolicyValueNet:
         state_vecs: List[List[float]],
         lr: float = 1e-3,
     ) -> Tuple[float, float]:
-        """
-        Single-step batch gradient descent with full backpropagation.
-
-        Computes gradients through all layers (backbone + both heads) using
-        manual backprop, accumulates them over the batch, then applies the
-        update.  Supports only MSE for the value head and cross-entropy for
-        the policy head.
-
-        Args:
-            target_policies : List of target policy vectors (one per sample)
-            target_values   : List of target values
-            state_vecs      : Corresponding state feature vectors
-            lr              : Learning rate
-
-        Returns:
-            (policy_loss, value_loss) averaged over the batch.
-        """
+        """Single-step batch gradient descent (manual backprop). Returns (pi_loss, v_loss)."""
         assert len(target_policies) == len(target_values) == len(state_vecs)
         n = len(state_vecs)
         if n == 0:
@@ -272,7 +216,7 @@ class PolicyValueNet:
     # ── Persistence ──────────────────────────────────────────────────────────
 
     def save(self, path: str) -> None:
-        """Save weights to a JSON file."""
+        """Persist weights to a JSON checkpoint."""
         data = {
             "num_actions": self.num_actions,
             "W1": self.W1, "b1": self.b1,
@@ -285,7 +229,7 @@ class PolicyValueNet:
 
     @classmethod
     def load(cls, path: str) -> "PolicyValueNet":
-        """Load weights from a JSON checkpoint."""
+        """Restore weights from a JSON checkpoint."""
         with open(path, "r") as f:
             data = json.load(f)
         net = cls.__new__(cls)

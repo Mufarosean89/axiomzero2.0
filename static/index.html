@@ -13,7 +13,6 @@
 </head>
 <body>
     <div class="app-container">
-        <!-- Header -->
         <header>
             <div class="header-left">
                 <div class="logo">
@@ -30,9 +29,7 @@
             </div>
         </header>
 
-        <!-- Main Layout -->
         <main class="main-grid">
-            <!-- Python Input Panel -->
             <div class="panel input-panel">
                 <div class="panel-header">
                     <div class="panel-title">
@@ -76,9 +73,7 @@ def absolute(x: int) -> int:
                 </div>
             </div>
 
-            <!-- Right Column: Output + Error -->
             <div class="output-column">
-                <!-- Lean Output Panel -->
                 <div class="panel output-panel">
                     <div class="panel-header">
                         <div class="panel-title">
@@ -127,7 +122,6 @@ def absolute(x: int) -> int:
             </div>
         </main>
 
-        <!-- Sample Selector Modal -->
         <div id="samples-modal" class="modal hidden">
             <div class="modal-backdrop"></div>
             <div class="modal-content">
@@ -139,9 +133,7 @@ def absolute(x: int) -> int:
                 </div>
                 <div class="modal-body">
                     <p class="modal-subtitle">Choose a sample program to compile into a Lean 4 proof.</p>
-                    <div class="sample-list" id="sample-list">
-                        <!-- Populated by JS -->
-                    </div>
+                    <div class="sample-list" id="sample-list"></div>
                 </div>
             </div>
         </div>

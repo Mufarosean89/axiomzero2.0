@@ -1,25 +1,10 @@
-"""
-Axiom Zero - Self-Play Training Loop
-Phase 3: RL Agent
+"""AlphaZero self-play training loop.
 
-Implements the AlphaZero self-play cycle:
-
-  1. Generate game: run MCTS to build a proof attempt episode.
-  2. Collect training examples: (state_vec, mcts_policy, outcome).
-  3. Train the network on a replay buffer of recent examples.
+Cycle:
+  1. Run MCTS to build a proof attempt episode.
+  2. Collect (state_vec, mcts_policy, outcome) examples.
+  3. Train the network on a replay buffer.
   4. Checkpoint the network.
-
-Episode structure
------------------
-An episode starts with a ProofState (from Phase 1→2 bridge) and ends when:
-  - Proof is complete (reward +1)  ✓
-  - Max depth reached (reward  0)  ✗
-  - Tactic failure with no recovery (reward -1) ✗
-
-Training targets
-----------------
-  policy target  : MCTS visit-count policy π̂ (length = NUM_ACTIONS)
-  value  target  : actual game outcome z ∈ {-1, 0, +1}
 """
 
 from __future__ import annotations
@@ -37,7 +22,7 @@ from spec_ingestion import extract_specs
 from ast_extractor import parse_source, normalize
 from abstract_interpreter import analyze
 
-from .encoder import encode, FEATURE_DIM
+from .encoder import encode
 from .networks import PolicyValueNet
 from .mcts import MCTS, TacticSimulator, RealTacticSimulator, MAX_DEPTH
 
@@ -47,9 +32,9 @@ from .mcts import MCTS, TacticSimulator, RealTacticSimulator, MAX_DEPTH
 @dataclass
 class TrainingExample:
     """A single labelled training example from self-play."""
-    state_vec: List[float]          # encoded observation
-    mcts_policy: List[float]        # MCTS-derived action probabilities
-    outcome: float                  # game result: +1 / 0 / -1
+    state_vec: List[float]
+    mcts_policy: List[float]
+    outcome: float
 
 
 @dataclass
@@ -73,20 +58,7 @@ def run_episode(
     temperature: float = 1.0,
     verbose: bool = False,
 ) -> EpisodeResult:
-    """
-    Run a single self-play episode.
-
-    Args:
-        initial_state   : Starting proof state (from Phase 2 bridge).
-        net             : Current policy/value network.
-        simulator       : Tactic simulator (or real LeanEnv wrapper).
-        num_simulations : MCTS simulations per move.
-        temperature     : >1 = more exploration; <1 = more greedy; 0 = argmax
-        verbose         : Print progress.
-
-    Returns:
-        EpisodeResult with collected training examples and outcome.
-    """
+    """Run a single self-play episode, returning EpisodeResult with training examples."""
     mcts = MCTS(net, simulator=simulator, num_simulations=num_simulations)
     state = initial_state
     examples: List[TrainingExample] = []
@@ -194,25 +166,16 @@ class TrainingConfig:
     batch_size: int = 32
     learning_rate: float = 5e-4
     checkpoint_dir: str = "checkpoints"
-    temperature_threshold: int = 10   # use high temp for first N steps, then greedy
+    temperature_threshold: int = 10
     verbose: bool = False
-
-    # ── Cold-start / supervised pre-training ─────────────────────────
-    pretrain_epochs: int = 5          # Number of supervised pre-training epochs
-    pretrain_batch_size: int = 32     # Batch size during pre-training
-    pretrain_learning_rate: float = 5e-4  # Learning rate for pre-training
-    pretrain_on_builtin: bool = True  # Auto-generate seed data from benchmark suite
+    pretrain_epochs: int = 5
+    pretrain_batch_size: int = 32
+    pretrain_learning_rate: float = 5e-4
+    pretrain_on_builtin: bool = True
 
 
 class SelfPlayTrainer:
-    """
-    Orchestrates the AlphaZero self-play training loop.
-
-    Usage
-    -----
-        trainer = SelfPlayTrainer(proof_states, config)
-        trainer.run()
-    """
+    """Orchestrates the AlphaZero self-play training loop."""
 
     def __init__(
         self,
@@ -409,7 +372,7 @@ class SelfPlayTrainer:
         """
         cfg = self.config
         print(f"\n{'='*60}")
-        print(f"Axiom Zero — Phase 3 Self-Play Training")
+        print("Axiom Zero -- Phase 3 Self-Play Training")
         print(f"  Proof states   : {len(self.proof_states)}")
         print(f"  Iterations     : {cfg.num_iterations}")
         print(f"  Episodes/iter  : {cfg.episodes_per_iteration}")
@@ -529,7 +492,7 @@ def train_from_source(
         raise ValueError("No proof obligations found in source.")
 
     proof_states = build_proof_state_collection(specs)
-    print(f"Found {specs.total_count} proof obligation(s) → {len(proof_states)} proof state(s).")
+    print(f"Found {specs.total_count} proof obligation(s) -> {len(proof_states)} proof state(s).")
 
     trainer = SelfPlayTrainer(proof_states, config or TrainingConfig())
     net = trainer.run()

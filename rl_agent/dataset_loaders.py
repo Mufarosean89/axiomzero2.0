@@ -1,56 +1,14 @@
-"""
-Axiom Zero - Dataset Loaders for Cold-Start Pre-Training
+"""Dataset loaders for cold-start pre-training of the RL agent.
 
-Provides parsers for public Lean proof datasets and a built-in seed data
-generator that uses the Phase 4 benchmark suite to bootstrap the replay buffer.
-
-Supported external datasets
----------------------------
-- **LeanDojo** (``traj.json``): State → tactic traces from human-written
-  Mathlib proofs.  Each trace is a list of ``(observation, tactic)`` pairs.
-- **miniF2F** (``.json``): Synthetic competition-math problems with both
-  informal (natural language) and formal (Lean 4) statements.
-- **ProofNet** (``.jsonl``): Undergraduate-course theorem statements with
-  reference Lean proofs.
-- **Lean Workbook** (``.json``): Large-scale corpus of Lean 4 proof
-  `(state, tactic)` pairs extracted from Mathlib contributions.
-
-Built-in seed data
-------------------
-When no external datasets are available, ``generate_builtin_seed_data()``
-uses the Phase 4 benchmark suite together with the heuristic tactic suggester
-(``suggest_tactics_for_goal``) to produce expert-like demonstration traces.
-This gives the agent a warm-start before self-play begins.
-
-Usage
------
-    from rl_agent.dataset_loaders import (
-        parse_leandojo_trace,
-        generate_builtin_seed_data,
-        convert_to_training_examples,
-        save_seed_data, load_seed_data,
-        DatasetFormat,
-    )
-
-    # Option A: Load external dataset
-    raw = parse_leandojo_trace("path/to/traj.json")
-
-    # Option B: Generate from built-in benchmarks
-    raw = generate_builtin_seed_data()
-
-    # Convert to training examples
-    examples = convert_to_training_examples(raw)
-
-    # Persist / reload
-    save_seed_data(examples, "seed_data.json")
-    examples2 = load_seed_data("seed_data.json")
+Provides parsers for public Lean proof datasets (LeanDojo, miniF2F, ProofNet,
+Lean Workbook) and a built-in seed data generator using the Phase 4 benchmark
+suite to bootstrap the replay buffer.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import math
 import copy
 import random
 from dataclasses import dataclass, field
@@ -58,9 +16,8 @@ from enum import Enum, auto
 from typing import Any, Dict, List, Optional, Tuple
 
 from proof_engine import ProofState, suggest_tactics_for_goal
-from proof_engine.proof_state import Hypothesis as _Hypothesis
 
-from .encoder import encode, FEATURE_DIM
+from .encoder import encode
 from .self_play import TrainingExample
 from .mcts import TacticSimulator
 
@@ -112,40 +69,20 @@ class RawProofStep:
 
 @dataclass
 class RawProofTrace:
-    """
-    A complete proof trace (multiple steps) from a human-written proof.
-
-    Attributes:
-        theorem_name : Name of the theorem.
-        steps        : Ordered list of RawProofStep.
-        outcome      : +1 if the proof was completed, -1 if it failed, 0 if unknown.
-        source       : Which dataset this came from.
-    """
+    """A complete proof trace (multiple steps) from a human-written proof."""
     theorem_name: str = ""
     steps: List[RawProofStep] = field(default_factory=list)
     outcome: float = 0.0
     source: str = "unknown"
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# Streaming JSON Array Reader
-# ═════════════════════════════════════════════════════════════════════════════
+# ── Streaming JSON array reader ────────────────────────────────────────────
 
 def _iter_json_array_objects(filepath: str, max_objects: Optional[int] = None):
-    """
-    Yield JSON objects from a large JSON array file without loading it entirely
-    into memory.
+    """Yield JSON objects from a large array file using a streaming reader.
 
-    Reads the file in 64 KB chunks and uses ``json.JSONDecoder.raw_decode`` to
-    extract individual objects.  This avoids the ``MemoryError`` that can occur
-    when ``json.load()`` is called on files >50 MB (e.g. the Lean Workbook).
-
-    Args:
-        filepath   : Path to a JSON file containing a top-level array ``[...]``.
-        max_objects: Maximum number of objects to yield, or ``None`` for all.
-
-    Yields:
-        Decoded JSON ``dict`` objects, one array element at a time.
+    Reads in 64 KB chunks using ``json.JSONDecoder.raw_decode`` to avoid
+    ``MemoryError`` on files >50 MB (e.g. the Lean Workbook).
     """
     decoder = json.JSONDecoder()
     with open(filepath, "rb") as f:
@@ -191,30 +128,37 @@ def _iter_json_array_objects(filepath: str, max_objects: Optional[int] = None):
 # Dataset Parsers
 # ═════════════════════════════════════════════════════════════════════════════
 
+def _make_observation(
+    theorem: str,
+    goal_type: str,
+    hypotheses: Optional[List[Dict[str, str]]] = None,
+    step_idx: int = 0,
+    prior_tactics: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Build a standard observation dict shared across all dataset parsers."""
+    prior = prior_tactics or []
+    return {
+        "theorem": theorem,
+        "num_open_goals": 1,
+        "num_total_goals": 1,
+        "num_tactics_applied": step_idx,
+        "depth": step_idx,
+        "is_complete": False,
+        "goals": [{
+            "id": f"g_{step_idx}",
+            "type": goal_type,
+            "num_hypotheses": len(hypotheses or []),
+            "hypotheses": hypotheses or [],
+        }],
+        "tactic_history": [
+            {"tactic": t, "success": True}
+            for t in prior
+        ],
+    }
+
+
 def parse_leandojo_trace(path: str) -> List[RawProofTrace]:
-    """
-    Parse a LeanDojo ``traj.json`` trace file.
-
-    LeanDojo traces have the structure::
-
-        {
-            "traj": [
-                {
-                    "state": { "goal": "...", "hypotheses": [...] },
-                    "tactic": "rw [add_comm]"
-                },
-                ...
-            ],
-            "result": "proved" | "failed",
-            "theorem": "add_comm"
-        }
-
-    Args:
-        path: Path to the ``traj.json`` file.
-
-    Returns:
-        List of ``RawProofTrace``, one per theorem.
-    """
+    """Parse a LeanDojo ``traj.json`` trace file into proof traces."""
     if not os.path.exists(path):
         raise FileNotFoundError(f"LeanDojo trace not found: {path}")
 
@@ -255,14 +199,10 @@ def parse_leandojo_trace(path: str) -> List[RawProofTrace]:
 
 
 def _normalize_leandojo_state(ld_state: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Convert a LeanDojo state dict to an observation dict compatible with
-    ``ProofState.to_observation()`` / ``encode()``.
-    """
+    """Convert LeanDojo state to an observation dict compatible with encode()."""
     goal_str = ld_state.get("goal", ld_state.get("target", ""))
     hypotheses_raw = ld_state.get("hypotheses", ld_state.get("hyps", []))
 
-    # Parse hypotheses from tuple or dict format
     hypotheses: List[Dict[str, str]] = []
     for hyp in hypotheses_raw:
         if isinstance(hyp, dict):
@@ -273,43 +213,15 @@ def _normalize_leandojo_state(ld_state: Dict[str, Any]) -> Dict[str, Any]:
         elif isinstance(hyp, (list, tuple)) and len(hyp) >= 2:
             hypotheses.append({"name": str(hyp[0]), "type": str(hyp[1])})
 
-    return {
-        "theorem": ld_state.get("theorem", ""),
-        "num_open_goals": 1,
-        "num_total_goals": 1,
-        "num_tactics_applied": 0,
-        "depth": 0,
-        "is_complete": False,
-        "goals": [{
-            "id": "g_0",
-            "type": goal_str,
-            "num_hypotheses": len(hypotheses),
-            "hypotheses": hypotheses,
-        }],
-        "tactic_history": [],
-    }
+    return _make_observation(
+        theorem=ld_state.get("theorem", ""),
+        goal_type=goal_str,
+        hypotheses=hypotheses,
+    )
 
 
 def parse_minif2f(path: str) -> List[RawProofTrace]:
-    """
-    Parse a miniF2F JSON file.
-
-    miniF2F entries have the structure::
-
-        {
-            "id": "mathd_algebra_1",
-            "informal": "Solve for x: x + 3 = 5",
-            "formal_statement": "theorem mathd_algebra_1 (x : ℤ) : x + 3 = 5 → x = 2 :=",
-            "formal_proof": "  intro h; omega"
-        }
-
-    Args:
-        path: Path to the miniF2F JSON file (usually ``train.json`` or ``valid.json``).
-
-    Returns:
-        List of ``RawProofTrace``, one per problem (with a single-step trace
-        containing the full proof as a tactic block).
-    """
+    """Parse a miniF2F JSON file into proof traces."""
     if not os.path.exists(path):
         raise FileNotFoundError(f"miniF2F file not found: {path}")
 
@@ -329,28 +241,15 @@ def parse_minif2f(path: str) -> List[RawProofTrace]:
 
         steps: List[RawProofStep] = []
         if formal_proof:
-            # Split the proof block into individual tactic lines
             tactics = _split_lean_proof(formal_proof)
             for i, tactic in enumerate(tactics):
                 steps.append(RawProofStep(
-                    state_observation={
-                        "theorem": theorem,
-                        "num_open_goals": 1,
-                        "num_total_goals": 1,
-                        "num_tactics_applied": i,
-                        "depth": i,
-                        "is_complete": False,
-                        "goals": [{
-                            "id": f"g_{i}",
-                            "type": goal_str,
-                            "num_hypotheses": 0,
-                            "hypotheses": [],
-                        }],
-                        "tactic_history": [
-                            {"tactic": t, "success": True}
-                            for t in tactics[:i]
-                        ],
-                    },
+                    state_observation=_make_observation(
+                        theorem=theorem,
+                        goal_type=goal_str,
+                        step_idx=i,
+                        prior_tactics=tactics[:i],
+                    ),
                     tactic=tactic,
                     outcome=1.0,
                     theorem_name=theorem,
@@ -426,24 +325,7 @@ def _split_lean_proof(proof_block: str) -> List[str]:
 
 
 def parse_proofnet(path: str) -> List[RawProofTrace]:
-    """
-    Parse a ProofNet JSONL file.
-
-    ProofNet entries (one per line) have the structure::
-
-        {
-            "header": {"problem_id": "algebra_1", "course": "algebra"},
-            "formal_statement": "theorem algebra_1 ...",
-            "formal_proof": "...",
-            "category": "algebra"
-        }
-
-    Args:
-        path: Path to the ProofNet JSONL file.
-
-    Returns:
-        List of ``RawProofTrace``.
-    """
+    """Parse a ProofNet JSONL file into proof traces."""
     if not os.path.exists(path):
         raise FileNotFoundError(f"ProofNet file not found: {path}")
 
@@ -462,28 +344,15 @@ def parse_proofnet(path: str) -> List[RawProofTrace]:
 
             goal_str = _extract_goal_from_lean_statement(formal_stmt)
             tactics = _split_lean_proof(formal_proof)
-
             steps: List[RawProofStep] = []
             for i, tactic in enumerate(tactics):
                 steps.append(RawProofStep(
-                    state_observation={
-                        "theorem": theorem,
-                        "num_open_goals": 1,
-                        "num_total_goals": 1,
-                        "num_tactics_applied": i,
-                        "depth": i,
-                        "is_complete": False,
-                        "goals": [{
-                            "id": f"g_{i}",
-                            "type": goal_str,
-                            "num_hypotheses": 0,
-                            "hypotheses": [],
-                        }],
-                        "tactic_history": [
-                            {"tactic": t, "success": True}
-                            for t in tactics[:i]
-                        ],
-                    },
+                    state_observation=_make_observation(
+                        theorem=theorem,
+                        goal_type=goal_str,
+                        step_idx=i,
+                        prior_tactics=tactics[:i],
+                    ),
                     tactic=tactic,
                     outcome=1.0,
                     theorem_name=theorem,
@@ -496,41 +365,17 @@ def parse_proofnet(path: str) -> List[RawProofTrace]:
                 source="proofnet",
             ))
 
-    return result
+        return result
 
 
 def parse_lean_workbook(
     path: str,
     max_entries: Optional[int] = 500,
 ) -> List[RawProofTrace]:
-    """
-    Parse a Lean Workbook JSON file.
+    """Parse a Lean Workbook JSON file into proof traces.
 
-    The Lean Workbook (from HuggingFace ``internlm/Lean-Workbook``) is a large
-    JSON array of objects with the actual structure::
-
-        {
-            "natural_language_statement": "...",
-            "answer": "...",
-            "tags": ["inequality", "algebra"],
-            "formal_statement": "theorem lean_workbook_N ... := by sorry",
-            "split": "lean_workbook",
-            "proof": ["simp", "nlinarith", ...]
-        }
-
-    Only entries with **non-empty** ``proof`` arrays produce training traces.
-    Entries with ``proof: []`` are silently skipped.
-
-    The raw file can be >90 MB and cause ``MemoryError`` with ``json.load()``,
-    so this function uses a streaming JSON array reader internally.
-
-    Args:
-        path       : Path to the Lean Workbook JSON file.
-        max_entries: Maximum number of entries to process (default 500).
-                     Set to ``None`` to process the entire file.
-
-    Returns:
-        List of ``RawProofTrace`` (only entries with non-empty proofs).
+    Skips entries with empty proofs. Uses streaming JSON reader to handle
+    files >90 MB without ``MemoryError``.
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"Lean Workbook file not found: {path}")
@@ -556,26 +401,13 @@ def parse_lean_workbook(
             # Skip standalone comment lines
             if tactic.startswith(("--", "/-")) and len(tactic) < 20:
                 continue
-
             steps.append(RawProofStep(
-                state_observation={
-                    "theorem": theorem,
-                    "num_open_goals": 1,
-                    "num_total_goals": 1,
-                    "num_tactics_applied": i,
-                    "depth": i,
-                    "is_complete": False,
-                    "goals": [{
-                        "id": f"g_{i}",
-                        "type": goal_str,
-                        "num_hypotheses": 0,
-                        "hypotheses": [],
-                    }],
-                    "tactic_history": [
-                        {"tactic": t, "success": True}
-                        for t in proof_tactics[:i]
-                    ],
-                },
+                state_observation=_make_observation(
+                    theorem=theorem,
+                    goal_type=goal_str,
+                    step_idx=i,
+                    prior_tactics=proof_tactics[:i],
+                ),
                 tactic=tactic,
                 outcome=1.0,
                 theorem_name=theorem,
@@ -603,25 +435,10 @@ def generate_builtin_seed_data(
     temperature: float = 0.1,
     verbose: bool = False,
 ) -> List[RawProofTrace]:
-    """
-    Generate seed training data from built-in proof states using heuristic
-    tactic suggestions as "expert demonstrations".
+    """Generate seed data from built-in proof states using heuristic tactic suggestions.
 
-    This simulates what a human expert would do by using the heuristic
-    ``suggest_tactics_for_goal()`` function (from ``proof_engine.tactics``)
-    to select tactics, producing plausible proof traces without a trained
-    network or MCTS.
-
-    Args:
-        proof_states   : List of ProofState objects to attempt proofs on.
-                         If None, uses the Phase 4 benchmark suite.
-        max_traces     : Maximum number of traces to generate.
-        max_steps_per_trace : Cap on steps per trace.
-        temperature    : Randomness for tactic selection (0 = greedy/argmax).
-        verbose        : Print progress.
-
-    Returns:
-        List of ``RawProofTrace``, one per attempted theorem.
+    Uses ``suggest_tactics_for_goal()`` to produce plausible proof traces
+    without a trained network or MCTS.
     """
     from proof_engine import ProofState, suggest_tactics_for_goal
     from proof_engine.proof_state import GoalStatus
@@ -681,13 +498,7 @@ def _generate_single_trace(
     max_steps: int = 10,
     temperature: float = 0.1,
 ) -> RawProofTrace:
-    """
-    Generate a single proof trace using heuristic tactic suggestions.
-
-    Uses ``suggest_tactics_for_goal()`` to pick the expert tactic at each
-    step, then delegates simulation to ``TacticSimulator.apply()`` to keep
-    the simulation logic in one place.
-    """
+    """Generate a single proof trace using heuristic tactic suggestions."""
     sim = TacticSimulator()
     steps: List[RawProofStep] = []
     current = copy.deepcopy(initial_state)
@@ -757,26 +568,9 @@ def _generate_single_trace(
 def convert_to_training_examples(
     traces: List[RawProofTrace],
 ) -> List[TrainingExample]:
-    """
-    Convert raw proof traces from any dataset into ``TrainingExample`` objects
-    suitable for seeding the replay buffer.
+    """Convert raw proof traces into TrainingExample objects for seeding the replay buffer.
 
-    Each step in each trace becomes a single ``TrainingExample`` where:
-
-    - ``state_vec``   : The encoded observation (via ``encode()``).
-    - ``mcts_policy`` : A one-hot vector indicating the expert's tactic choice.
-    - ``outcome``     : The trace-level outcome (+1, 0, or -1).
-
-    One-hot encoding of the expert action is an approximation — in a full
-    supervised setup you'd use the MCTS visit-count distribution.  However,
-    for cold-start bootstrapping, one-hot works well as a behavioural cloning
-    signal.
-
-    Args:
-        traces: Raw proof traces from any parser or generator.
-
-    Returns:
-        List of ``TrainingExample``.
+    Each step becomes a single example with a one-hot policy for the expert tactic.
     """
     tactic_list = _get_tactic_list()
     num_actions = len(tactic_list)
@@ -814,21 +608,10 @@ def convert_with_mcts_policy(
     num_actions: int,
     smooth_eps: float = 0.1,
 ) -> List[TrainingExample]:
-    """
-    Convert traces to training examples using a *smoothed* one-hot policy.
+    """Convert traces to training examples using a label-smoothed policy.
 
-    Instead of a hard one-hot vector, this assigns probability ``(1 - eps)``
-    to the expert action and ``eps / (n-1)`` to all others.  This provides
-    a milder training signal that is less prone to overfitting on noise in
-    the expert demonstrations.
-
-    Args:
-        traces        : Raw proof traces.
-        num_actions   : Size of the action space.
-        smooth_eps    : Label-smoothing epsilon (default 0.1).
-
-    Returns:
-        List of ``TrainingExample`` with smoothed policies.
+    Assigns ``(1 - eps)`` probability to the expert action, reducing overfitting
+    on noisy expert demonstrations.
     """
     tactic_list = _get_tactic_list()
 
@@ -862,13 +645,7 @@ def convert_with_mcts_policy(
 # ═════════════════════════════════════════════════════════════════════════════
 
 def save_seed_data(examples: List[TrainingExample], path: str) -> None:
-    """
-    Save seed training examples to a JSON file.
-
-    Args:
-        examples: List of TrainingExample.
-        path    : Output file path.
-    """
+    """Save seed training examples to a JSON file."""
     data = {
         "format": "axiom_zero_seed_data_v1",
         "num_examples": len(examples),
@@ -887,15 +664,7 @@ def save_seed_data(examples: List[TrainingExample], path: str) -> None:
 
 
 def load_seed_data(path: str) -> List[TrainingExample]:
-    """
-    Load seed training examples from a JSON file.
-
-    Args:
-        path: Path to the seed data file.
-
-    Returns:
-        List of TrainingExample.
-    """
+    """Load seed training examples from a JSON file."""
     if not os.path.exists(path):
         raise FileNotFoundError(f"Seed data not found: {path}")
 
@@ -923,20 +692,7 @@ def load_dataset(
     format: Optional[DatasetFormat] = None,
     max_traces: Optional[int] = None,
 ) -> List[RawProofTrace]:
-    """
-    Auto-detect and load a dataset by path.
-
-    If ``format`` is not specified, the function attempts to infer the format
-    from the file extension and content.
-
-    Args:
-        path      : Path to the dataset file.
-        format    : Explicit format (auto-detected if None).
-        max_traces: If set, only load the first N traces (useful for testing).
-
-    Returns:
-        List of RawProofTrace.
-    """
+    """Auto-detect and load a dataset by path, inferring format from the filename."""
     if format is None:
         format = _infer_format(path)
 

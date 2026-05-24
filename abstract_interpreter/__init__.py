@@ -1,13 +1,7 @@
-"""
-Axiom Zero - Abstract Interpreter Module
+"""Axiom Zero - Abstract Interpreter Module
 
 Performs symbolic type inference and tensor shape analysis over normalized IR.
 Tracks data flow and generates background facts for the proof state.
-
-Public API:
-    - analyze(ir) -> AbstractState: Run full abstract interpretation
-    - AbstractState: Complete analysis results
-    - AbstractValue: Type + shape at a program point
 """
 
 from .interpreter import AbstractInterpreter
@@ -35,13 +29,5 @@ __all__ = [
 
 
 def analyze(ir) -> AbstractState:
-    """Run abstract interpretation over normalized IR.
-
-    Args:
-        ir: NormalizedIR from AST extraction
-
-    Returns:
-        AbstractState with inferred types, shapes, and data flow facts
-    """
-    interpreter = AbstractInterpreter()
-    return interpreter.analyze(ir)
+    """Run abstract interpretation over normalized IR."""
+    return AbstractInterpreter().analyze(ir)

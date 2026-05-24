@@ -1,20 +1,11 @@
-"""
-Axiom Zero - Tactics Module
+"""Axiom Zero — Tactics Module
 
 Defines the tactic action space for the RL agent and provides a TacticExecutor
 that sends tactics to the Lean 4 server and processes results.
 
-The tactic action space starts with ~20 curated tactics covering common proof patterns:
-- Introduction: intro, intro h, intros
-- Application: apply, exact, refine, eapply
-- Rewriting: rewrite, rw, simp
-- Case analysis: cases, induction, by_cases
-- Automation: omega, decide, ring, linarith
-- Structural: have, let, calc, constructor
-- Disjunction: left, right
-- Quantifier: exists
-- Simplification: dsimp, unfold, norm_num
-- Other: trivial, rfl, done, assumption
+The tactic action space covers ~30 curated tactics across categories:
+introduction, application, rewriting, case analysis, automation, structural,
+disjunction, existential, simplification, and closure.
 """
 
 from __future__ import annotations
@@ -22,41 +13,38 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional
+
 from .proof_state import ProofState, Goal, Hypothesis, GoalStatus
 from .lemma_db import LemmaDatabase, LemmaSuggestion
 
 
 class TacticCategory(Enum):
     """Category of a tactic for the RL agent's policy network."""
-    INTRODUCTION = auto()      # intro, intros
-    APPLICATION = auto()       # apply, exact, refine
-    REWRITING = auto()         # rewrite, simp
-    CASE_ANALYSIS = auto()     # cases, induction
-    AUTOMATION = auto()        # omega, decide, ring
-    STRUCTURAL = auto()        # have, let, calc
-    DISJUNCTION = auto()       # left, right
-    EXISTENTIAL = auto()       # exists
-    SIMPLIFICATION = auto()    # dsimp, unfold
-    CLOSURE = auto()           # trivial, rfl, assumption
-    CUSTOM = auto()            # User-defined/learned
+    INTRODUCTION = auto()
+    APPLICATION = auto()
+    REWRITING = auto()
+    CASE_ANALYSIS = auto()
+    AUTOMATION = auto()
+    STRUCTURAL = auto()
+    DISJUNCTION = auto()
+    EXISTENTIAL = auto()
+    SIMPLIFICATION = auto()
+    CLOSURE = auto()
+    CUSTOM = auto()
 
 
 @dataclass
 class TacticTemplate:
-    """
-    A tactic template with holes to fill.
-    
-    Used for tactics that require arguments (e.g., `apply` needs a lemma name).
-    The RL agent fills the holes based on the current proof state.
-    
+    """A tactic pattern with holes to fill.
+
     Attributes:
-        pattern: The tactic pattern with {hole} placeholders
-        category: The tactic category
-        description: Human-readable description
-        requires_hypothesis: Whether this tactic needs a hypothesis name
-        requires_term: Whether this tactic needs a term/expression
-        num_holes: Number of holes to fill
+        pattern: The tactic pattern with ``{0}``, ``{1}`` placeholders.
+        category: The tactic category.
+        description: Human-readable description.
+        requires_hypothesis: Whether this tactic needs a hypothesis name.
+        requires_term: Whether this tactic needs a term/expression.
+        num_holes: Number of holes to fill.
     """
     pattern: str
     category: TacticCategory
@@ -66,14 +54,12 @@ class TacticTemplate:
     num_holes: int = 0
 
     def fill(self, *args: str) -> str:
-        """Fill holes in the pattern with the given arguments."""
         try:
             return self.pattern.format(*args)
         except (IndexError, KeyError):
             return self.pattern
 
     def to_lean(self, *args: str) -> str:
-        """Convert to a Lean 4 tactic string."""
         return self.fill(*args)
 
 
@@ -81,283 +67,79 @@ class TacticTemplate:
 
 CORE_TACTICS: Dict[str, TacticTemplate] = {
     # Introduction
-    "intro": TacticTemplate(
-        pattern="intro {0}",
-        category=TacticCategory.INTRODUCTION,
-        description="Introduce a hypothesis or variable",
-        requires_hypothesis=True,
-        num_holes=1,
-    ),
-    "intros": TacticTemplate(
-        pattern="intros",
-        category=TacticCategory.INTRODUCTION,
-        description="Introduce all hypotheses",
-    ),
-    "revert": TacticTemplate(
-        pattern="revert {0}",
-        category=TacticCategory.INTRODUCTION,
-        description="Revert a hypothesis to a goal",
-        requires_hypothesis=True,
-        num_holes=1,
-    ),
+    "intro": TacticTemplate(pattern="intro {0}", category=TacticCategory.INTRODUCTION, description="Introduce a hypothesis", requires_hypothesis=True, num_holes=1),
+    "intros": TacticTemplate(pattern="intros", category=TacticCategory.INTRODUCTION, description="Introduce all hypotheses"),
+    "revert": TacticTemplate(pattern="revert {0}", category=TacticCategory.INTRODUCTION, description="Revert a hypothesis to a goal", requires_hypothesis=True, num_holes=1),
 
     # Application
-    "apply": TacticTemplate(
-        pattern="apply {0}",
-        category=TacticCategory.APPLICATION,
-        description="Apply a lemma or hypothesis to the goal",
-        requires_term=True,
-        num_holes=1,
-    ),
-    "exact": TacticTemplate(
-        pattern="exact {0}",
-        category=TacticCategory.APPLICATION,
-        description="Provide an exact proof term",
-        requires_term=True,
-        num_holes=1,
-    ),
-    "refine": TacticTemplate(
-        pattern="refine {0}",
-        category=TacticCategory.APPLICATION,
-        description="Refine the goal with a term containing holes",
-        requires_term=True,
-        num_holes=1,
-    ),
-    "eapply": TacticTemplate(
-        pattern="eapply {0}",
-        category=TacticCategory.APPLICATION,
-        description="Apply with existential variables",
-        requires_term=True,
-        num_holes=1,
-    ),
+    "apply": TacticTemplate(pattern="apply {0}", category=TacticCategory.APPLICATION, description="Apply a lemma or hypothesis to the goal", requires_term=True, num_holes=1),
+    "exact": TacticTemplate(pattern="exact {0}", category=TacticCategory.APPLICATION, description="Provide an exact proof term", requires_term=True, num_holes=1),
+    "refine": TacticTemplate(pattern="refine {0}", category=TacticCategory.APPLICATION, description="Refine the goal with a term containing holes", requires_term=True, num_holes=1),
+    "eapply": TacticTemplate(pattern="eapply {0}", category=TacticCategory.APPLICATION, description="Apply with existential variables", requires_term=True, num_holes=1),
 
     # Rewriting
-    "rewrite": TacticTemplate(
-        pattern="rewrite [{0}]",
-        category=TacticCategory.REWRITING,
-        description="Rewrite using an equality",
-        requires_term=True,
-        num_holes=1,
-    ),
-    "rw": TacticTemplate(
-        pattern="rw [{0}]",
-        category=TacticCategory.REWRITING,
-        description="Rewrite shorthand",
-        requires_term=True,
-        num_holes=1,
-    ),
-    "simp": TacticTemplate(
-        pattern="simp",
-        category=TacticCategory.REWRITING,
-        description="Simplify using the simplifier",
-    ),
-    "simp_at": TacticTemplate(
-        pattern="simp at {0}",
-        category=TacticCategory.REWRITING,
-        description="Simplify a hypothesis",
-        requires_hypothesis=True,
-        num_holes=1,
-    ),
+    "rewrite": TacticTemplate(pattern="rewrite [{0}]", category=TacticCategory.REWRITING, description="Rewrite using an equality", requires_term=True, num_holes=1),
+    "rw": TacticTemplate(pattern="rw [{0}]", category=TacticCategory.REWRITING, description="Rewrite shorthand", requires_term=True, num_holes=1),
+    "simp": TacticTemplate(pattern="simp", category=TacticCategory.REWRITING, description="Simplify using the simplifier"),
+    "simp_at": TacticTemplate(pattern="simp at {0}", category=TacticCategory.REWRITING, description="Simplify a hypothesis", requires_hypothesis=True, num_holes=1),
 
     # Case analysis
-    "cases": TacticTemplate(
-        pattern="cases {0}",
-        category=TacticCategory.CASE_ANALYSIS,
-        description="Case analysis on a hypothesis",
-        requires_hypothesis=True,
-        num_holes=1,
-    ),
-    "induction": TacticTemplate(
-        pattern="induction {0}",
-        category=TacticCategory.CASE_ANALYSIS,
-        description="Induction on a hypothesis",
-        requires_hypothesis=True,
-        num_holes=1,
-    ),
-    "by_cases": TacticTemplate(
-        pattern="by_cases h : {0}",
-        category=TacticCategory.CASE_ANALYSIS,
-        description="Case split on a proposition",
-        requires_term=True,
-        num_holes=1,
-    ),
+    "cases": TacticTemplate(pattern="cases {0}", category=TacticCategory.CASE_ANALYSIS, description="Case analysis on a hypothesis", requires_hypothesis=True, num_holes=1),
+    "induction": TacticTemplate(pattern="induction {0}", category=TacticCategory.CASE_ANALYSIS, description="Induction on a hypothesis", requires_hypothesis=True, num_holes=1),
+    "by_cases": TacticTemplate(pattern="by_cases h : {0}", category=TacticCategory.CASE_ANALYSIS, description="Case split on a proposition", requires_term=True, num_holes=1),
 
     # Automation
-    "omega": TacticTemplate(
-        pattern="omega",
-        category=TacticCategory.AUTOMATION,
-        description="Linear arithmetic solver",
-    ),
-    "decide": TacticTemplate(
-        pattern="decide",
-        category=TacticCategory.AUTOMATION,
-        description="Decision procedure for decidable propositions",
-    ),
-    "ring": TacticTemplate(
-        pattern="ring",
-        category=TacticCategory.AUTOMATION,
-        description="Ring algebra solver",
-    ),
-    "linarith": TacticTemplate(
-        pattern="linarith",
-        category=TacticCategory.AUTOMATION,
-        description="Linear arithmetic solver",
-    ),
-    "nlinarith": TacticTemplate(
-        pattern="nlinarith",
-        category=TacticCategory.AUTOMATION,
-        description="Non-linear arithmetic solver",
-    ),
-    "norm_num": TacticTemplate(
-        pattern="norm_num",
-        category=TacticCategory.AUTOMATION,
-        description="Normalize numeric expressions",
-    ),
-    "positivity": TacticTemplate(
-        pattern="positivity",
-        category=TacticCategory.AUTOMATION,
-        description="Prove positivity of expressions",
-    ),
+    "omega": TacticTemplate(pattern="omega", category=TacticCategory.AUTOMATION, description="Linear arithmetic solver"),
+    "decide": TacticTemplate(pattern="decide", category=TacticCategory.AUTOMATION, description="Decision procedure for decidable propositions"),
+    "ring": TacticTemplate(pattern="ring", category=TacticCategory.AUTOMATION, description="Ring algebra solver"),
+    "linarith": TacticTemplate(pattern="linarith", category=TacticCategory.AUTOMATION, description="Linear arithmetic solver"),
+    "nlinarith": TacticTemplate(pattern="nlinarith", category=TacticCategory.AUTOMATION, description="Non-linear arithmetic solver"),
+    "norm_num": TacticTemplate(pattern="norm_num", category=TacticCategory.AUTOMATION, description="Normalize numeric expressions"),
+    "positivity": TacticTemplate(pattern="positivity", category=TacticCategory.AUTOMATION, description="Prove positivity of expressions"),
 
     # Structural
-    "have": TacticTemplate(
-        pattern="have h{0} : {1}",
-        category=TacticCategory.STRUCTURAL,
-        description="Introduce a new hypothesis",
-        requires_term=True,
-        num_holes=2,
-    ),
-    "let": TacticTemplate(
-        pattern="let {0} := {1}",
-        category=TacticCategory.STRUCTURAL,
-        description="Define a local abbreviation",
-        requires_term=True,
-        num_holes=2,
-    ),
-    "calc": TacticTemplate(
-        pattern="calc",
-        category=TacticCategory.STRUCTURAL,
-        description="Start a calculation block",
-    ),
-    "constructor": TacticTemplate(
-        pattern="constructor",
-        category=TacticCategory.STRUCTURAL,
-        description="Apply the constructor of an inductive type",
-    ),
+    "have": TacticTemplate(pattern="have h{0} : {1}", category=TacticCategory.STRUCTURAL, description="Introduce a new hypothesis", requires_term=True, num_holes=2),
+    "let": TacticTemplate(pattern="let {0} := {1}", category=TacticCategory.STRUCTURAL, description="Define a local abbreviation", requires_term=True, num_holes=2),
+    "calc": TacticTemplate(pattern="calc", category=TacticCategory.STRUCTURAL, description="Start a calculation block"),
+    "constructor": TacticTemplate(pattern="constructor", category=TacticCategory.STRUCTURAL, description="Apply the constructor of an inductive type"),
 
     # Disjunction
-    "left": TacticTemplate(
-        pattern="left",
-        category=TacticCategory.DISJUNCTION,
-        description="Pick the left disjunct",
-    ),
-    "right": TacticTemplate(
-        pattern="right",
-        category=TacticCategory.DISJUNCTION,
-        description="Pick the right disjunct",
-    ),
+    "left": TacticTemplate(pattern="left", category=TacticCategory.DISJUNCTION, description="Pick the left disjunct"),
+    "right": TacticTemplate(pattern="right", category=TacticCategory.DISJUNCTION, description="Pick the right disjunct"),
 
     # Existential
-    "exists": TacticTemplate(
-        pattern="refine ⟨{0}, ?_⟩",
-        category=TacticCategory.EXISTENTIAL,
-        description="Provide a witness for an existential",
-        requires_term=True,
-        num_holes=1,
-    ),
-    "use": TacticTemplate(
-        pattern="use {0}",
-        category=TacticCategory.EXISTENTIAL,
-        description="Use a witness for an existential",
-        requires_term=True,
-        num_holes=1,
-    ),
+    "exists": TacticTemplate(pattern="refine ⟨{0}, ?_⟩", category=TacticCategory.EXISTENTIAL, description="Provide a witness for an existential", requires_term=True, num_holes=1),
+    "use": TacticTemplate(pattern="use {0}", category=TacticCategory.EXISTENTIAL, description="Use a witness for an existential", requires_term=True, num_holes=1),
 
     # Simplification
-    "dsimp": TacticTemplate(
-        pattern="dsimp",
-        category=TacticCategory.SIMPLIFICATION,
-        description="Definitional simplification",
-    ),
-    "dsimp_at": TacticTemplate(
-        pattern="dsimp at {0}",
-        category=TacticCategory.SIMPLIFICATION,
-        description="Definitional simplification at hypothesis",
-        requires_hypothesis=True,
-        num_holes=1,
-    ),
-    "unfold": TacticTemplate(
-        pattern="unfold {0}",
-        category=TacticCategory.SIMPLIFICATION,
-        description="Unfold a definition",
-        requires_term=True,
-        num_holes=1,
-    ),
+    "dsimp": TacticTemplate(pattern="dsimp", category=TacticCategory.SIMPLIFICATION, description="Definitional simplification"),
+    "dsimp_at": TacticTemplate(pattern="dsimp at {0}", category=TacticCategory.SIMPLIFICATION, description="Definitional simplification at hypothesis", requires_hypothesis=True, num_holes=1),
+    "unfold": TacticTemplate(pattern="unfold {0}", category=TacticCategory.SIMPLIFICATION, description="Unfold a definition", requires_term=True, num_holes=1),
 
     # Closure
-    "trivial": TacticTemplate(
-        pattern="trivial",
-        category=TacticCategory.CLOSURE,
-        description="Prove simple true statements",
-    ),
-    "rfl": TacticTemplate(
-        pattern="rfl",
-        category=TacticCategory.CLOSURE,
-        description="Reflexivity of equality",
-    ),
-    "rfl'": TacticTemplate(
-        pattern="rfl",
-        category=TacticCategory.CLOSURE,
-        description="Reflexivity shorthand",
-    ),
-    "assumption": TacticTemplate(
-        pattern="assumption",
-        category=TacticCategory.CLOSURE,
-        description="Find a hypothesis that matches the goal",
-    ),
-    "exfalso": TacticTemplate(
-        pattern="exfalso",
-        category=TacticCategory.CLOSURE,
-        description="Replace goal with False",
-    ),
-    "contradiction": TacticTemplate(
-        pattern="contradiction",
-        category=TacticCategory.CLOSURE,
-        description="Derive a contradiction from hypotheses",
-    ),
-    "done": TacticTemplate(
-        pattern="done",
-        category=TacticCategory.CLOSURE,
-        description="Assert that there are no remaining goals",
-    ),
+    "trivial": TacticTemplate(pattern="trivial", category=TacticCategory.CLOSURE, description="Prove simple true statements"),
+    "rfl": TacticTemplate(pattern="rfl", category=TacticCategory.CLOSURE, description="Reflexivity of equality"),
+    "assumption": TacticTemplate(pattern="assumption", category=TacticCategory.CLOSURE, description="Find a hypothesis that matches the goal"),
+    "exfalso": TacticTemplate(pattern="exfalso", category=TacticCategory.CLOSURE, description="Replace goal with False"),
+    "contradiction": TacticTemplate(pattern="contradiction", category=TacticCategory.CLOSURE, description="Derive a contradiction from hypotheses"),
+    "done": TacticTemplate(pattern="done", category=TacticCategory.CLOSURE, description="Assert that there are no remaining goals"),
 }
 
-# Tactics that take no arguments (can be applied directly)
-ZERO_ARG_TACTICS = {
-    name for name, t in CORE_TACTICS.items()
-    if t.num_holes == 0
-}
-
-# Tactics that need a hypothesis name
-ONE_HYP_TACTICS = {
-    name for name, t in CORE_TACTICS.items()
-    if t.requires_hypothesis and t.num_holes == 1
-}
+ZERO_ARG_TACTICS: set = {name for name, t in CORE_TACTICS.items() if t.num_holes == 0}
+ONE_HYP_TACTICS: set = {name for name, t in CORE_TACTICS.items() if t.requires_hypothesis and t.num_holes == 1}
 
 
 # ─── Tactic Executor ──────────────────────────────────────────────────────
 
 @dataclass
 class TacticResult:
-    """
-    Result of applying a tactic.
-    
+    """Result of applying a tactic.
+
     Attributes:
-        success: Whether the tactic was applied successfully
-        tactic: The tactic string that was applied
-        new_goals: New goals generated (empty if proof is complete)
-        error: Error message if the tactic failed
-        num_subgoals: Number of new subgoals created
+        success: Whether the tactic was applied successfully.
+        tactic: The tactic string that was applied.
+        new_goals: New goals generated (empty if proof is complete).
+        error: Error message if the tactic failed.
     """
     success: bool
     tactic: str
@@ -374,94 +156,51 @@ class TacticResult:
 
 
 class TacticExecutor:
-    """
-    Executes tactics by communicating with the Lean 4 server.
-    Translates high-level tactic names to Lean 4 syntax and sends them
-    to the LeanEnv for execution.
-    
-    Usage:
-        executor = TacticExecutor(lean_env)
-        result = executor.apply("intro x")
-        result = executor.apply("simp")
+    """Executes tactics by communicating with the Lean 4 server.
+
+    Translates high-level tactic names to Lean 4 syntax and sends them to the LeanEnv.
     """
 
     def __init__(self, lean_env, lemma_db: Optional[LemmaDatabase] = None):
-        """
-        Initialize the tactic executor.
-        
-        Args:
-            lean_env: An initialized LeanEnv instance
-            lemma_db: Optional LemmaDatabase for filling requires_term tactic holes
-        """
         self.lean_env = lean_env
         self.tactic_templates = dict(CORE_TACTICS)
         self.lemma_db = lemma_db or LemmaDatabase()
 
     def apply(self, tactic: str, args: Optional[List[str]] = None, goal: Optional[Goal] = None) -> TacticResult:
-        """
-        Apply a tactic and return the result.
-        
+        """Apply a tactic and return the result.
+
         Args:
-            tactic: Tactic name or full tactic string
-            args: Arguments for the tactic (used if tactic is a name)
-            goal: Current goal context (used for lemma database lookups)
-            
+            tactic: Tactic name or full tactic string.
+            args: Arguments for the tactic (used if tactic is a name).
+            goal: Current goal context (used for lemma database lookups).
+
         Returns:
-            TacticResult with success status and new goals
+            TacticResult with success status and new goals.
         """
-        # Resolve tactic to a full Lean 4 command
         tactic_str = self._resolve_tactic(tactic, args, goal=goal)
-
         if tactic_str is None:
-            return TacticResult(
-                success=False,
-                tactic=tactic,
-                error=f"Unknown tactic: {tactic}",
-            )
+            return TacticResult(success=False, tactic=tactic, error=f"Unknown tactic: {tactic}")
 
-        # Send to Lean server via the new LeanEnv API
         try:
             response = self.lean_env.apply_tactic(tactic_str)
             return self._parse_response(tactic_str, response)
         except Exception as e:
-            return TacticResult(
-                success=False,
-                tactic=tactic_str,
-                error=str(e),
-            )
+            return TacticResult(success=False, tactic=tactic_str, error=str(e))
 
     def apply_to_goal(self, tactic: str, goal: Goal, args: Optional[List[str]] = None) -> TacticResult:
-        """
-        Apply a tactic focused on a specific goal.
-        
-        Args:
-            tactic: Tactic name or full tactic string
-            goal: The specific goal to target
-            args: Arguments for the tactic
-            
-        Returns:
-            TacticResult
-        """
-        # Use focus notation: `· tactic` to apply to the first goal
-        focused_tactic = f"· {tactic}"
-        return self.apply(focused_tactic, args, goal=goal)
+        """Apply a tactic focused on a specific goal using focus notation (``·``)."""
+        return self.apply(f"· {tactic}", args, goal=goal)
 
     def get_available_tactics(self, state: ProofState) -> List[Dict[str, Any]]:
+        """Get the list of applicable tactics for the current proof state.
+
+        Filters out tactics unlikely to be useful based on the goal type.
         """
-        Get the list of applicable tactics for the current proof state.
-        Filters out tactics that are unlikely to be useful based on the goal type.
-        
-        Args:
-            state: Current proof state
-            
-        Returns:
-            List of tactic info dicts with name, category, description
-        """
-        available = []
+        available: List[Dict[str, Any]] = []
         current_goal = state.open_goals[0] if state.open_goals else None
 
         for name, template in self.tactic_templates.items():
-            info = {
+            info: Dict[str, Any] = {
                 "name": name,
                 "category": template.category.name,
                 "description": template.description,
@@ -470,29 +209,17 @@ class TacticExecutor:
                 "requires_term": template.requires_term,
             }
 
-            # Filter tactics based on goal type
             if current_goal:
-                goal_type = current_goal.type
-
-                # Only suggest `left`/`right` for disjunction goals
-                if name in ("left", "right") and not any(
-                    kw in goal_type for kw in ("Or", "Sum", "∨")
-                ):
+                gt = current_goal.type
+                if name in ("left", "right") and not any(kw in gt for kw in ("Or", "Sum", "∨")):
+                    continue
+                if name in ("exists", "use") and "∃" not in gt and "Exists" not in gt:
+                    continue
+                if name == "constructor" and not any(kw in gt for kw in ("And", "Or", "Prod", "Exists", "∧", "∨", "×")):
                     continue
 
-                # Only suggest `exists`/`use` for existential goals
-                if name in ("exists", "use") and "∃" not in goal_type and "Exists" not in goal_type:
-                    continue
-
-                # Only suggest `constructor` for inductive goals
-                if name == "constructor" and not any(
-                    kw in goal_type for kw in ("And", "Or", "Prod", "Exists", "∧", "∨", "×")
-                ):
-                    continue
-
-                # For requires_term tactics, include lemma suggestions from the DB
                 if template.requires_term and template.num_holes == 1:
-                    suggestion = self.lemma_db.suggest_for_goal(goal_type, tactic=name)
+                    suggestion = self.lemma_db.suggest_for_goal(gt, tactic=name)
                     if suggestion:
                         info["suggested_lemma"] = suggestion.lemma_name
                         info["suggested_tactic_rendered"] = suggestion.rendered
@@ -503,79 +230,49 @@ class TacticExecutor:
         return available
 
     def _resolve_tactic(self, tactic: str, args: Optional[List[str]] = None, goal: Optional[Goal] = None) -> Optional[str]:
-        """
-        Resolve a tactic name or string to a Lean 4 tactic command.
-        
-        Args:
-            tactic: Tactic name or full tactic string
-            args: Arguments for the tactic
-            goal: Current goal (used for lemma database lookups when args are absent)
-            
-        Returns:
-            Lean 4 tactic string, or None if unknown
-        """
-        # If it's already a full tactic string, use it as-is
+        """Resolve a tactic name or string to a Lean 4 tactic command."""
         if " " in tactic or tactic in ("simp", "omega", "decide", "ring", "rfl", "trivial", "done"):
             return tactic
 
-        # Look up the template
         template = self.tactic_templates.get(tactic)
         if template is None:
             return None
 
-        # Fill holes with provided args, or use defaults
         if args:
             return template.to_lean(*args)
         elif template.num_holes == 0:
             return template.to_lean()
         elif goal and template.requires_term and self.lemma_db:
-            # Try to fill from lemma database
             suggestion = self.lemma_db.suggest_for_goal(goal.type, tactic=tactic)
             if suggestion:
                 return suggestion.rendered
-            else:
-                # Fallback: still use placeholder, but mark as unknown lemma
-                placeholders = [f"_{i}" for i in range(template.num_holes)]
-                return template.to_lean(*placeholders)
+            placeholders = [f"_{i}" for i in range(template.num_holes)]
+            return template.to_lean(*placeholders)
         else:
-            # Use placeholders for unfilled holes
             placeholders = [f"_{i}" for i in range(template.num_holes)]
             return template.to_lean(*placeholders)
 
     def _parse_response(self, tactic_str: str, response: Dict[str, Any]) -> TacticResult:
-        """
-        Parse the Lean server response into a TacticResult.
-        
-        Args:
-            tactic_str: The tactic that was applied
-            response: Raw response from the Lean server
-            
-        Returns:
-            Structured TacticResult
-        """
+        """Parse the Lean server response into a TacticResult."""
         success = response.get("success", False)
         error = response.get("error")
         goals_data = response.get("goals", [])
+        new_goals: List[Goal] = []
 
-        new_goals = []
         if isinstance(goals_data, list):
             for i, g in enumerate(goals_data):
                 if isinstance(g, Goal):
                     new_goals.append(g)
                 elif isinstance(g, dict):
-                    goal = Goal(
+                    new_goals.append(Goal(
                         id=g.get("id", f"g_{i}"),
                         type=g.get("type", g.get("target", "?")),
                         hypotheses=[
-                            Hypothesis(
-                                name=h.get("name", "?"),
-                                type=h.get("type", "?"),
-                            )
+                            Hypothesis(name=h.get("name", "?"), type=h.get("type", "?"))
                             for h in g.get("hypotheses", [])
                         ],
                         depth=i,
-                    )
-                    new_goals.append(goal)
+                    ))
 
         return TacticResult(
             success=success,
@@ -585,129 +282,62 @@ class TacticExecutor:
         )
 
     def suggest_lemma(self, tactic_name: str, goal: Goal) -> Optional[LemmaSuggestion]:
-        """
-        Get a lemma suggestion for a tactic applied to a goal.
-        
-        Args:
-            tactic_name: The tactic to use (e.g., "apply", "rw", "exact")
-            goal: The goal to prove
-            
-        Returns:
-            LemmaSuggestion with the rendered tactic string, or None if no match
-        """
+        """Get a lemma suggestion for a tactic applied to a goal."""
         return self.lemma_db.suggest_for_goal(goal.type, tactic=tactic_name)
 
     def search_lemmas(self, goal_type: str, top_k: int = 5) -> List[LemmaSuggestion]:
-        """
-        Search the lemma database for lemmas relevant to a goal type.
-        
-        Args:
-            goal_type: The goal type string
-            top_k: Maximum number of results
-            
-        Returns:
-            List of LemmaSuggestion ordered by relevance
-        """
+        """Search the lemma database for lemmas relevant to a goal type."""
         return self.lemma_db.search(goal_type, top_k=top_k)
 
-    def register_custom_tactic(self, name: str, template: TacticTemplate):
-        """
-        Register a custom tactic template for the agent to use.
-        Enables the system to learn new tactics over time.
-        
-        Args:
-            name: Name for the tactic
-            template: TacticTemplate defining the pattern
-        """
+    def register_custom_tactic(self, name: str, template: TacticTemplate) -> None:
+        """Register a custom tactic template for the agent to use."""
         self.tactic_templates[name] = template
 
 
 # ─── Tactic Prediction Helpers ─────────────────────────────────────────────
 
 def suggest_tactics_for_goal(goal: Goal) -> List[str]:
-    """
-    Heuristically suggest tactics for a given goal.
+    """Heuristically suggest tactics for a given goal.
+
     Used to seed the RL agent's search or provide fallback suggestions.
-    
-    Args:
-        goal: The goal to analyze
-        
-    Returns:
-        List of suggested tactic names
     """
-    suggestions = ["simp", "rfl", "trivial", "assumption", "omega", "decide"]
-    goal_type = goal.type
+    suggestions: List[str] = ["simp", "rfl", "trivial", "assumption", "omega", "decide"]
+    gt = goal.type
 
-    # For implications / forall: try intro
-    if "→" in goal_type or "∀" in goal_type or "->" in goal_type:
+    if "→" in gt or "∀" in gt or "->" in gt:
         suggestions.insert(0, "intro")
-
-    # For conjunction: try constructor
-    if "∧" in goal_type or "And" in goal_type or "×" in goal_type or "Prod" in goal_type:
+    if "∧" in gt or "And" in gt or "×" in gt or "Prod" in gt:
         suggestions.insert(0, "constructor")
-
-    # For disjunction: try left/right
-    if "∨" in goal_type or "Or" in goal_type or "Sum" in goal_type:
+    if "∨" in gt or "Or" in gt or "Sum" in gt:
         suggestions = ["left", "right"] + suggestions
-
-    # For equality: try rfl, rewrite
-    if "=" in goal_type or "≡" in goal_type:
+    if "=" in gt or "≡" in gt:
         suggestions = ["rfl", "simp"] + suggestions
-        # Check hypotheses for relevant equalities
         for hyp in goal.hypotheses:
             if "=" in hyp.type or "≡" in hyp.type:
                 suggestions.insert(1, f"rw [{hyp.name}]")
-
-    # For existential: try exists
-    if "∃" in goal_type or "Exists" in goal_type:
+    if "∃" in gt or "Exists" in gt:
         suggestions.insert(0, "exists")
-
-    # For negation: try exfalso
-    if "¬" in goal_type or "Not" in goal_type:
+    if "¬" in gt or "Not" in gt:
         suggestions.insert(0, "exfalso")
 
     return suggestions
 
 
 def compute_tactic_embedding(tactic_name: str) -> List[float]:
-    """
-    Compute a simple one-hot-like embedding for a tactic.
-    Used by the RL agent to represent tactic choices.
-    
-    Args:
-        tactic_name: Name of the tactic
-        
-    Returns:
-        List of floats representing the tactic embedding
-    """
+    """Compute a simple one-hot-like embedding for a tactic name."""
     tactic_list = list(CORE_TACTICS.keys())
     embedding = [0.0] * (len(tactic_list) + 1)
-
     if tactic_name in tactic_list:
-        idx = tactic_list.index(tactic_name)
-        embedding[idx] = 1.0
+        embedding[tactic_list.index(tactic_name)] = 1.0
     else:
-        embedding[-1] = 1.0  # Unknown tactic
-
+        embedding[-1] = 1.0
     return embedding
 
 
 def tactic_from_embedding(embedding: List[float]) -> Optional[str]:
-    """
-    Convert a tactic embedding back to a tactic name.
-    
-    Args:
-        embedding: List of floats representing the tactic
-        
-    Returns:
-        Tactic name, or None if unknown
-    """
+    """Convert a tactic embedding back to a tactic name."""
     tactic_list = list(CORE_TACTICS.keys())
     if len(embedding) != len(tactic_list) + 1:
         return None
-
     max_idx = max(range(len(embedding)), key=lambda i: embedding[i])
-    if max_idx < len(tactic_list):
-        return tactic_list[max_idx]
-
-    return None
+    return tactic_list[max_idx] if max_idx < len(tactic_list) else None

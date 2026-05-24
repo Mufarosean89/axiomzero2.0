@@ -1,167 +1,100 @@
-"""
-Axiom Zero - Phase 4: IR → Lean 4 Compiler
+"""Axiom Zero — Phase 4: IR -> Lean 4 Compiler
 
-Translates the pipeline's NormalizedIR, SpecCollection, and AbstractState into
-a complete Lean 4 module.  Each function with formal specifications (from Phase 1
-@requires/@ensures decorators) generates:
+Translates NormalizedIR, SpecCollection, and AbstractState into an idiomatic
+Lean 4 module. For each function with specifications, generates:
 
-  1. A theorem statement for each proof obligation.
-  2. A proof block — either auto-filled (simple arithmetic, equalities) or left
-     as a ``sorry`` placeholder for the RL agent (Phase 3).
+1. A ``def`` for the function itself (the actual implementation).
+2. Correctness theorems that reference the ``def`` by name, using the
+   function's postcondition(s) as the claim.
 
-The translation is entirely deterministic: given the same IR + specs, the same
-Lean 4 output is always produced.
-
-Key design points
------------------
-- Python ``int`` → Lean ``ℤ`` (signed integers).
-- Python ``bool`` → Lean ``Bool``.
-- Python ``List[T]`` → Lean ``List T``.
-- Python binary operators are mapped to their Lean equivalents (``+``, ``-``,
-  ``*``, ``/``, ``<``, ``≤``, ``>``, ``≥``, ``=``, ``≠``, ``∧``, ``∨``, ``¬``).
-- ``@requires(p)`` becomes a theorem whose goal is ``p``, with the function
-  parameters as binder hypotheses.
-- ``@ensures(p)`` becomes a theorem whose goal is ``p``, with both parameters
-  and preconditions as binder hypotheses.
-- Loop invariants are expressed as ``∀`` statements over the induction variable.
-- Every proof obligation that is provable by ``omega``, ``simp``, or ``rfl`` is
-  filled immediately; everything else stays as ``sorry`` (delegated to Phase 3).
+Preconditions that are mere type assertions (e.g. ``isinstance(n, int)``)
+are dropped because Lean's type system makes them redundant.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional
 
-from ast_extractor.ir import (
-    NormalizedIR,
-    FunctionIR,
-    StatementIR,
-    ExpressionIR,
-    TypeAnnotation,
-    TensorOpKind,
-    ClassIR,
-)
-from abstract_interpreter.abstract_domain import AbstractState, TypeDomain
-from spec_ingestion.obligations import (
-    ProofObligation,
-    SpecCollection,
-    ObligationKind,
-    ObligationStatus,
-)
-from proof_engine.builder import obligation_to_lean_theorem
+from ast_extractor.ir import NormalizedIR, FunctionIR, StatementIR, ExpressionIR, ClassIR
+from abstract_interpreter.abstract_domain import AbstractState
+from spec_ingestion.obligations import ProofObligation, SpecCollection, ObligationKind
 
 
-# ── Python → Lean type mapping ──────────────────────────────────────────────
+# ── Python -> Lean type mapping ──────────────────────────────────────────────
 
 _PY_TYPE_TO_LEAN: Dict[str, str] = {
-    "int": "ℤ",
-    "Int": "ℤ",
-    "float": "ℝ",
-    "Float": "ℝ",
-    "bool": "Bool",
-    "Bool": "Bool",
-    "str": "String",
-    "String": "String",
-    "None": "Unit",
-    "NoneType": "Unit",
-    "List": "List",
-    "list": "List",
-    "Dict": "HashMap",
-    "dict": "HashMap",
+    "int": "\u2124", "Int": "\u2124",
+    "float": "\u211d", "Float": "\u211d",
+    "bool": "Bool", "Bool": "Bool",
+    "str": "String", "String": "String",
+    "None": "Unit", "NoneType": "Unit",
+    "List": "List", "list": "List",
+    "Dict": "HashMap", "dict": "HashMap",
     "Optional": "Option",
-    "Set": "Set",
-    "set": "Set",
-    "Tuple": "Prod",
-    "tuple": "Prod",
+    "Set": "Set", "set": "Set",
+    "Tuple": "Prod", "tuple": "Prod",
 }
 
-
-# ── Python → Lean operator mapping ──────────────────────────────────────────
-
 _BINOP_TO_LEAN: Dict[str, str] = {
-    "+": " + ",
-    "-": " - ",
-    "*": " * ",
-    "/": " / ",
-    "//": " / ",         # ℕ division is the same symbol
-    "%": " % ",
-    "**": " ^ ",
-    "==": " = ",
-    "!=": " ≠ ",
-    "<": " < ",
-    "<=": " ≤ ",
-    ">": " > ",
-    ">=": " ≥ ",
-    "and": " ∧ ",
-    "or": " ∨ ",
-    "in": " ∈ ",
-    "not in": " ∉ ",
+    "+": " + ", "-": " - ", "*": " * ", "/": " / ",
+    "//": " / ", "%": " % ", "**": " ^ ",
+    "==": " = ", "!=": " \u2260 ",
+    "<": " < ", "<=": " \u2264 ", ">": " > ", ">=": " \u2265 ",
+    "and": " \u2227 ", "or": " \u2228 ", "in": " \u2208 ", "not in": " \u2209 ",
 }
 
 _UNOP_TO_LEAN: Dict[str, str] = {
-    "-": "-",
-    "not": "¬",
-    "~": "~~~",
+    "-": "-", "not": "\u00ac", "~": "~~~",
 }
 
 
-# ── Difficulty heuristics ───────────────────────────────────────────────────
+# ── Difficulty classifiers ──────────────────────────────────────────────────
 
 _SIMPLE_PATTERNS: List[str] = [
-    r"^\s*\d+\s*[+\-*/]\s*\d+\s*[=<>!]=\s*\d+\s*$",        # 1 + 2 == 3
-    r"^\s*x\s*[+\-*/]\s*\d+\s*[=<>!]=\s*\d+\s*$",           # x + 1 == 2
-    r"^\s*\d+\s*[+\-*/]\s*x\s*[=<>!]=\s*\d+\s*$",           # 1 + x == 2
-    r"^\s*x\s*[+\-*/]\s*y\s*[=<>!]=\s*[a-z]+\s*$",          # x + y == result
-    r"^\s*x\s*[=<>!]=\s*\d+\s*$",                            # x == 5
-    r"^\s*x\s*[+\-*/]\s*0\s*[=<>!]=\s*x\s*$",               # x + 0 == x
-    r"^\s*0\s*[+\-*/]\s*x\s*[=<>!]=\s*x\s*$",               # 0 + x == x
-    r"^\s*x\s*-\s*x\s*[=<>!]=\s*0\s*$",                     # x - x == 0
-    r"^\s*x\s*[*/]\s*1\s*[=<>!]=\s*x\s*$",                  # x * 1 == x
-    r"^\s*1\s*[*]\s*x\s*[=<>!]=\s*x\s*$",                   # 1 * x == x
-    r"^\s*x\s*[=<>!]=\s*x\s*$",                              # x == x
-    r"^\s*x\s*>\s*0\s*$",                                    # x > 0
-    r"^\s*x\s*<\s*0\s*$",                                    # x < 0
-    r"^\s*x\s*>=\s*0\s*$",                                   # x >= 0
-    r"^\s*x\s*<=\s*0\s*$",                                   # x <= 0
-    r"^\s*result\s*[=<>!]=\s*.*$",                           # result == ...
-    r"^\s*loop_terminates",                                  # loop termination
-    r"^\s*is_tensor",                                        # tensor existence
+    r"^\s*\d+\s*[+\-*/]\s*\d+\s*[=<>!]?=\s*\d+\s*$",
+    r"^\s*x\s*[+\-*/]\s*\d+\s*[=<>!]?=\s*\d+\s*$",
+    r"^\s*\d+\s*[+\-*/]\s*x\s*[=<>!]?=\s*\d+\s*$",
+    r"^\s*x\s*[+\-*/]\s*y\s*[=<>!]?=\s*[a-z]+\s*$",
+    r"^\s*x\s*[=<>!]?=\s*\d+\s*$",
+    r"^\s*x\s*[+\-*/]\s*0\s*[=<>!]?=\s*x\s*$",
+    r"^\s*0\s*[+\-*/]\s*x\s*[=<>!]?=\s*x\s*$",
+    r"^\s*x\s*-\s*x\s*[=<>!]?=\s*0\s*$",
+    r"^\s*x\s*[*]\s*1\s*[=<>!]?=\s*x\s*$",
+    r"^\s*1\s*[*]\s*x\s*[=<>!]?=\s*x\s*$",
+    r"^\s*x\s*[=<>!]?=\s*x\s*$",
+    r"^\s*x\s*>\s*0\s*$",
+    r"^\s*x\s*<\s*0\s*$",
+    r"^\s*x\s*>=\s*0\s*$",
+    r"^\s*x\s*<=\s*0\s*$",
+    r"^\s*loop_terminates",
+    r"^\s*is_tensor",
 ]
 
 _OMEGA_PATTERNS: List[str] = [
-    r"^\s*x\s*[+]\s*\d+\s*>\s*x\s*$",                       # x + n > x
-    r"^\s*x\s*[+]\s*\d+\s*>=\s*x\s*$",                       # x + n >= x
-    r"^\s*x\s*>\s*\d+\s*→\s*x\s*>\s*0\s*$",                 # x > 5 → x > 0
-    r"^\s*x\s*[+]\s*y\s*[=<>!]=\s*y\s*[+]\s*x\s*$",        # x + y == y + x (comm)
-    r"^\s*x\s*>\s*0\s*→\s*-x\s*<\s*0\s*$",                  # x > 0 → -x < 0
-    r"^\s*x\s*<\s*0\s*→\s*-x\s*>\s*0\s*$",                  # x < 0 → -x > 0
+    r"^\s*\w+\s*[+]\s*\d+\s*>\s*\w+\s*$",
+    r"^\s*\w+\s*[+]\s*\d+\s*>=\s*\w+\s*$",
+    r"^\s*\w+\s*>\s*\d+\s*\u2192\s*\w+\s*>\s*0\s*$",
+    r"^\s*\w+\s*[+]\s*\w+\s*[=<>!]?=\s*\w+\s*[+]\s*\w+\s*$",
+    r"^\s*\w+\s*>\s*0\s*\u2192\s*-\w+\s*<\s*0\s*$",
+    r"^\s*\w+\s*<\s*0\s*\u2192\s*-\w+\s*>\s*0\s*$",
 ]
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  IR → Lean Compiler
-# ═══════════════════════════════════════════════════════════════════════════
-
 class IRToLeanCompiler:
-    """
-    Translates Axiom Zero's NormalizedIR + SpecCollection into a Lean 4 module.
+    """Translates NormalizedIR + SpecCollection into an idiomatic Lean 4 module.
 
-    Usage
-    -----
-        compiler = IRToLeanCompiler()
-        module = compiler.compile_module(ir, specs, abstract_state, "my_module")
-        with open("output.lean", "w") as f:
-            f.write(module)
+    Each function produces:
+      - A ``def`` implementing the function body.
+      - A correctness theorem for each postcondition, referencing the def.
+    Type-assertion preconditions (``isinstance``) are dropped.
     """
 
     def __init__(self) -> None:
-        self._module_name: str = ""
+        self._module_name = ""
         self._ir: Optional[NormalizedIR] = None
         self._specs: Optional[SpecCollection] = None
         self._abstract_state: Optional[AbstractState] = None
-
-    # ── Public API ────────────────────────────────────────────────────────
 
     def compile_module(
         self,
@@ -171,212 +104,475 @@ class IRToLeanCompiler:
         module_name: str = "target",
         module_doc: str = "",
     ) -> str:
-        """
-        Compile a full module into Lean 4.
-
-        Args:
-            ir              : Normalized IR from the AST pipeline.
-            specs           : Spec collection extracted from the IR.
-            abstract_state  : Abstract state from type/shape analysis.
-            module_name     : Name for the generated Lean module.
-            module_doc      : Optional documentation string (placed in a comment).
-
-        Returns:
-            Complete Lean 4 module source as a string.
-        """
+        """Compile a full module into Lean 4 (function defs + correctness theorems)."""
         self._ir = ir
         self._specs = specs
         self._abstract_state = abstract_state
         self._module_name = module_name
 
         lines: List[str] = []
-
-        # Module header
-        if module_doc:
-            lines.append(f"/- {module_doc} -/")
-        else:
-            lines.append(f"/- Auto-generated by Axiom Zero from module: {module_name} -/")
+        doc = module_doc or f"Auto-generated by Axiom Zero from module: {module_name}"
+        lines.append(f"/- {doc} -/")
         lines.append("")
-
-        # Imports
         lines.append("import Mathlib")
-        lines.append("open Classical")
         lines.append("")
 
-        # Optional: set_option pp.all true for debugging
-        # lines.append("set_option pp.all true")
-        # lines.append("")
-
-        # Type aliases (from abstract state)
-        type_lines = self._generate_type_aliases()
-        if type_lines:
-            lines.extend(type_lines)
-            lines.append("")
-
-        # Function specifications as Lean theorems
-        theorem_lines = self._generate_theorems()
-        lines.extend(theorem_lines)
-
+        lines.extend(self._generate_content())
         return "\n".join(lines)
 
-    # ── Theorem generation ────────────────────────────────────────────────
+    # ── Content generation ────────────────────────────────────────────────
 
-    def _generate_type_aliases(self) -> List[str]:
-        """Generate Lean type aliases for custom Python types."""
-        # Currently a no-op; custom type aliases can be added here.
-        return []
-
-    def _generate_theorems(self) -> List[str]:
-        """Generate Lean theorem blocks for all proof obligations."""
+    def _generate_content(self) -> List[str]:
+        """Generate function definitions followed by correctness theorems."""
         lines: List[str] = []
-        seen_ids: Set[str] = set()
+        lines.extend(self._generate_function_defs())
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend(self._generate_correctness_theorems())
+        return self._strip_trailing_empty_lines(lines)
 
-        for ob in self._specs.all if self._specs else []:
-            if ob.id in seen_ids:
-                continue
-            seen_ids.add(ob.id)
+    @staticmethod
+    def _strip_trailing_empty_lines(xs: List[str]) -> List[str]:
+        while xs and not xs[-1].strip():
+            xs.pop()
+        return xs
 
-            # Generate the theorem header and skeleton
-            theorem_text = self._obligation_to_lean(ob)
-            if theorem_text:
-                lines.append(theorem_text)
+    # ── Step 1: Function definitions ──────────────────────────────────────
+
+    def _generate_function_defs(self) -> List[str]:
+        if not self._ir:
+            return []
+        lines: List[str] = []
+        for func in self._ir.functions:
+            lines.extend(self._generate_function_def(func))
+            lines.append("")
+        for cls in self._ir.classes:
+            for method in cls.methods:
+                lines.extend(self._generate_function_def(method, class_name=cls.name))
                 lines.append("")
+        return lines
+
+    def _generate_function_def(self, func: FunctionIR, class_name: str = "") -> List[str]:
+        """Generate a single ``def`` from a FunctionIR node."""
+        func_name = f"{class_name}.{func.signature.name}" if class_name else func.signature.name
+
+        # Parameter binders  (p : Type)
+        param_binders: List[str] = []
+        for param in func.signature.parameters:
+            lean_type = self.translate_type(param.type.to_string()) if param.type else "\u2124"
+            param_binders.append(f"({param.name} : {lean_type})")
+        all_params = " ".join(param_binders)
+
+        return_type = self.translate_type(func.signature.return_type.to_string()) if func.signature.return_type else "\u2124"
+
+        # Translate body
+        body_expr = self._translate_body_to_expr(func.body)
+
+        result: List[str] = []
+        if len(param_binders) <= 2:
+            result.append(f"def {func_name} {all_params} : {return_type} :=")
+        else:
+            result.append(f"def {func_name}")
+            for b in param_binders:
+                result.append(f"  {b}")
+            result.append(f"  : {return_type} :=")
+
+        result.append(f"  {body_expr}")
+        return result
+
+    def _translate_body_to_expr(self, body: List[StatementIR]) -> str:
+        """Translate a list of statements into a single Lean expression."""
+        if not body:
+            return "sorry"
+
+        # Single return statement
+        if len(body) == 1 and body[0].stmt_type == "return":
+            if body[0].value:
+                return self.translate_expression(body[0].value)
+            return "()"
+
+        # If / else with explicit orelse branch
+        if len(body) == 1 and body[0].stmt_type == "if" and body[0].orelse:
+            cond = self.translate_expression(body[0].condition) if body[0].condition else "True"
+            then_expr = self._translate_body_to_expr(body[0].body)
+            else_expr = self._translate_body_to_expr(body[0].orelse)
+            if then_expr and else_expr:
+                return f"if {cond} then {then_expr} else {else_expr}"
+
+        # If statement followed by more statements — recursive if-then-else chain
+        # Handles patterns like:
+        #   if c1: return a; if c2: return b; return c
+        #   → if c1 then a else (if c2 then b else c)
+        if body[0].stmt_type == "if":
+            cond = self.translate_expression(body[0].condition) if body[0].condition else "True"
+            then_expr = self._translate_body_to_expr(body[0].body)
+            else_expr = self._translate_body_to_expr(body[1:])
+            if then_expr:
+                if else_expr:
+                    return f"if {cond} then {then_expr} else {else_expr}"
+                return f"if {cond} then {then_expr}"
+
+        return "sorry  -- body translation not available"
+
+    # ── Step 2: Correctness theorems ──────────────────────────────────────
+
+    def _generate_correctness_theorems(self) -> List[str]:
+        """Generate idiomatic correctness theorems that reference function defs.
+
+        For each function with postconditions, emits:
+            theorem <func>_correct (params) (hPreconditions) : <func> args <predicate>  :=  by
+              <tactic>
+
+        Preconditions that are type-assertions (isinstance) are dropped.
+        The ``result`` placeholder in postconditions is replaced with the function call.
+        """
+        lines: List[str] = []
+        if not self._specs or not self._ir:
+            return lines
+
+        # Group obligations by function name
+        func_obligations: Dict[str, List[ProofObligation]] = {}
+        for ob in self._specs.all:
+            if ob.kind in (ObligationKind.PRECONDITION, ObligationKind.POSTCONDITION):
+                func_obligations.setdefault(ob.function, []).append(ob)
+
+        for func_name, obligations in func_obligations.items():
+            func_ir = self._find_function(func_name)
+            if not func_ir:
+                continue
+
+            # Separate non-type-assertion preconditions and postconditions
+            preconditions: List[ProofObligation] = []
+            postconditions: List[ProofObligation] = []
+            for ob in obligations:
+                if ob.kind == ObligationKind.PRECONDITION:
+                    if self._is_type_assertion(ob.predicate):
+                        print(f"[Axiom Zero] Dropped type-assertion precondition: '{ob.predicate}' "
+                              f"(redundant in Lean; handled by type signature)")
+                    else:
+                        # Strip any isinstance/type calls from mixed preconditions
+                        stripped_pred = self._strip_type_assertions(ob.predicate)
+                        if stripped_pred:
+                            ob.predicate = stripped_pred
+                            preconditions.append(ob)
+                elif ob.kind == ObligationKind.POSTCONDITION:
+                    postconditions.append(ob)
+
+            # Build the function-call string for replacing ``result``
+            arg_names = [p.name for p in func_ir.signature.parameters]
+            func_call = f"{func_name} {' '.join(arg_names)}"
+
+            for i, post in enumerate(postconditions):
+                theorem = self._build_correctness_theorem(
+                    func_ir, func_name, func_call,
+                    preconditions, post, i, len(postconditions),
+                )
+                if theorem:
+                    lines.append(theorem)
+                    lines.append("")
 
         return lines
 
-    def _obligation_to_lean(self, ob: ProofObligation) -> str:
-        """
-        Convert a single proof obligation into a Lean 4 theorem + proof block.
+    def _build_correctness_theorem(
+        self,
+        func_ir: FunctionIR,
+        func_name: str,
+        func_call: str,
+        preconditions: List[ProofObligation],
+        postcondition: ProofObligation,
+        index: int,
+        total: int,
+    ) -> Optional[str]:
+        """Build a single correctness theorem."""
+        # Convert predicate to Lean syntax and replace ``result`` with function call
+        cleaned_pred = self.obligation_to_predicate_lean(postcondition)
+        cleaned_pred = re.sub(r'\bresult\b', func_call, cleaned_pred)
+        # Split chained comparisons (a <= b <= c) into (a <= b) ∧ (b <= c)
+        cleaned_pred = self._split_chained_comparisons(cleaned_pred)
 
-        Uses the existing ``obligation_to_lean_theorem`` from the proof_engine
-        bridge to generate the skeleton, then optionally replaces ``sorry`` with
-        a heuristic proof.
-        """
-        # Use the existing bridge to get the skeleton
-        theorem_skeleton = obligation_to_lean_theorem(ob)
+        # Derive theorem name
+        theorem_name = f"{func_name}_correct"
+        if total > 1:
+            theorem_name = f"{theorem_name}_{index}"
 
-        # Determine the proof strategy based on obligation kind and predicate
-        proof_tactic = self._select_proof_tactic(ob)
+        # Choose the best tactic
+        tactic = self._select_tactic_for_predicate(func_name, cleaned_pred)
 
-        if proof_tactic and proof_tactic != "sorry":
-            # Replace the last line ("  sorry") with the proof block
-            lines = theorem_skeleton.rsplit("\n", 1)
-            if len(lines) == 2 and lines[1].strip() == "sorry":
-                theorem_skeleton = lines[0] + "\n" + self._format_proof_block(proof_tactic)
+        # Build binder lines
+        binder_lines: List[str] = []
+        for param in func_ir.signature.parameters:
+            lean_type = self.translate_type(param.type.to_string()) if param.type else "\u2124"
+            binder_lines.append(f"  ({param.name} : {lean_type})")
 
-        return theorem_skeleton
+        # Add preconditions as hypotheses
+        for pi, pre in enumerate(preconditions):
+            lean_pre = self.obligation_to_predicate_lean(pre)
+            hyp_name = f"h{pi}" if len(preconditions) > 1 else "hpre"
+            binder_lines.append(f"  ({hyp_name} : {lean_pre})")
 
-    def _select_proof_tactic(self, ob: ProofObligation) -> str:
-        """Select a proof tactic for the obligation based on its predicate."""
-        pred = ob.predicate.strip()
-        kind = ob.kind
+        # Emit the theorem
+        result: List[str] = []
+        if binder_lines:
+            result.append(f"theorem {theorem_name}")
+            result.extend(binder_lines)
+            result.append(f"  : {cleaned_pred} :=")
+        else:
+            result.append(f"theorem {theorem_name} : {cleaned_pred} :=")
 
-        # Handle specific obligation kinds
-        if kind == ObligationKind.LOOP_TERMINATION:
-            return "sorry"  # Loop termination often needs manual reasoning
+        if tactic and tactic != "sorry":
+            result.append("  by")
+            result.append(f"    {tactic}")
+        else:
+            result.append("  sorry")
 
-        if kind == ObligationKind.SHAPE_CONDITION:
-            if pred.startswith("is_tensor"):
-                return "sorry"  # Tensor existence — needs the specific context
-            if "matmul_shapes_compatible" in pred:
-                return "sorry"
+        return "\n".join(result)
 
-        if kind == ObligationKind.PRECONDITION:
-            # Preconditions often involve simple arithmetic
-            return self._classify_predicate(pred)
-
-        if kind == ObligationKind.POSTCONDITION:
-            return self._classify_predicate(pred)
-
-        if kind == ObligationKind.ASSERTION:
-            return self._classify_predicate(pred)
-
-        return "sorry"
-
-    def _classify_predicate(self, pred: str) -> str:
-        """Classify a predicate string and return the best proof tactic."""
+    def _select_tactic_for_predicate(self, func_name: str, pred: str) -> str:
+        """Pick a proof tactic for a correctness theorem."""
         stripped = pred.strip()
+        # Strip any balanced outer parentheses for cleaner pattern matching
+        while stripped.startswith("(") and stripped.endswith(")"):
+            inner = stripped[1:-1].strip()
+            if inner.count("(") == inner.count(")"):
+                stripped = inner
+            else:
+                break
 
-        # Check omega patterns first (arithmetic)
+        # rfl: equality where the function call appears on both sides or is definitionally equal
+        if " = " in stripped and not any(c in stripped for c in ("\u2200", "\u2203", "\u2192", "\u2227", "\u2228")):
+            left, right = stripped.split(" = ", 1)
+            l, r = left.strip(), right.strip()
+            if l == r:
+                return "rfl"
+            # Check for f(x) = x or f(x) = (x) or similar definitional equalities
+            if l.startswith(f"{func_name} "):
+                call_arg_str = l[len(func_name):].strip()
+                # De-parenthesize RHS for comparison
+                rhs = r
+                while rhs.startswith("(") and rhs.endswith(")"):
+                    inner = rhs[1:-1].strip()
+                    if inner.count("(") == inner.count(")"):
+                        rhs = inner
+                    else:
+                        break
+                if call_arg_str == rhs:
+                    return "rfl"
+
+            # Commutativity: check for a + b = b + a, a * b = b * a, etc.
+            # This handles cases where f a b = b + a (commutativity of +/*)
+            if l.startswith(f"{func_name} "):
+                call_args = l[len(func_name):].strip().split()
+                if len(call_args) >= 2:
+                    a, b = call_args[0], call_args[1]
+                    # De-parenthesize RHS for comparison
+                    rhs = r
+                    while rhs.startswith("(") and rhs.endswith(")"):
+                        inner = rhs[1:-1].strip()
+                        if inner.count("(") == inner.count(")"):
+                            rhs = inner
+                        else:
+                            break
+
+                    # f a b = b + a  (commutativity) → unfold f, then use add_comm/mul_comm
+                    if rhs == f"{b} + {a}":
+                        return f"simp [{func_name}, add_comm]"
+                    if rhs == f"{b} * {a}":
+                        return f"simp [{func_name}, mul_comm]"
+
+                    # f a b = a + b  (matches function body) → definitional equality
+                    if rhs == f"{a} + {b}":
+                        return "rfl"
+                    if rhs == f"{a} * {b}":
+                        return "rfl"
+
+                # Fallback: rfl for simple equalities — Lean can unfold definitions
+                if not any(c in r for c in ("\u2200", "\u2203", "\u2192", "\u2227", "\u2228")):
+                    return "rfl"
+
+        # omega: numeric inequalities / arithmetic
         for pattern in _OMEGA_PATTERNS:
             if re.match(pattern, stripped):
                 return "omega"
 
-        # Check simple patterns (simp / rfl)
+        # simp: simple patterns that match after ``result`` → function-call substitution
         for pattern in _SIMPLE_PATTERNS:
             if re.match(pattern, stripped):
                 return "simp"
 
-        # Equality of simple expressions
-        if " = " in stripped and not any(c in stripped for c in ("∀", "∃", "→", "∧", "∨")):
-            left, right = stripped.split(" = ", 1)
-            left = left.strip()
-            right = right.strip()
-            # x = x  → rfl
-            if left == right:
-                return "rfl"
-            # Simple numeric identities
-            if left.isdigit() and right.isdigit():
-                if int(left) == int(right):
-                    return "rfl"
-
-        # Boolean / trivial goals
+        # Trivial proposition
         if stripped in ("True", "true"):
             return "trivial"
 
-        # Default: defer to RL agent — only simp what we're confident about
+        # Function-call goal with comparison (likely a conditional definition)
+        # If the predicate involves the function name plus a comparison (>=, >, <=, <),
+        # unfold the definition and use omega. omega handles if-then-else internally,
+        # so explicit split is not needed and avoids errors for non-conditional defs.
+        if func_name in stripped and not any(c in stripped for c in ("\u2200", "\u2203", "\u2192", "\u2227", "\u2228")):
+            if any(op in stripped for op in ("\u2265", ">", "\u2264", "<")):
+                return f"unfold {func_name}; omega"
+
+        # Function-call goal with pure conjunction (no disjunction), e.g.
+        # ``lo <= f x ∧ f x <= hi``.
+        # Typical for postconditions involving bounds like clamp.
+        if "\u2227" in stripped and func_name in stripped and "\u2228" not in stripped:
+            return f"unfold {func_name}; split_ifs <;> constructor <;> linarith"
+
+        # Function-call goal with mixed conjunction and disjunction
+        # (e.g., ``(x < lo ∧ f x = lo) ∨ (x > hi ∧ f x = hi) ∨ (f x = x)``).
+        # ``split_ifs`` provides hypotheses for each branch; ``solve_by_elim``
+        # uses them to navigate the disjunction and close conjunction subgoals.
+        if "\u2227" in stripped and "\u2228" in stripped and func_name in stripped:
+            return f"unfold {func_name}; split_ifs <;> solve_by_elim"
+
+        # Function-call goal with disjunction (e.g., f x = x ∨ f x = -x)
+        # This is typical for functions defined by cases (like absolute value).
+        if "\u2228" in stripped and func_name in stripped:
+            return f"unfold {func_name}; split_ifs <;> simp"
+
         return "sorry"
 
-    def _format_proof_block(self, tactic: str) -> str:
-        """Format a proof block for a given tactic."""
-        return f"  by\n    {tactic}"
+    # ── Helpers ───────────────────────────────────────────────────────────
+
+    def _find_function(self, name: str) -> Optional[FunctionIR]:
+        """Look up a FunctionIR by its (possibly dotted) name."""
+        for func in (self._ir.functions if self._ir else []):
+            if func.signature.name == name:
+                return func
+        if self._ir:
+            for cls in self._ir.classes:
+                for method in cls.methods:
+                    if f"{cls.name}.{method.signature.name}" == name:
+                        return method
+        return None
+
+    @staticmethod
+    def _strip_type_assertions(predicate: str) -> str:
+        """Strip isinstance/type calls from a predicate, keeping logical constraints.
+
+        Handles deeply nested parenthesized structure from the spec parser:
+        ``(((isinstance(x, int) and isinstance(lo, int)) and isinstance(hi, int)) and (lo <= hi))``
+        returns ``lo <= hi``.
+        """
+        p = predicate.strip()
+
+        # Remove isinstance/type calls (they never contain nested parens)
+        lowered = re.sub(r'\bisinstance\s*\([^)]*\)', '', p, flags=re.IGNORECASE)
+        lowered = re.sub(r'\btype\s*\([^)]*\)', '', lowered, flags=re.IGNORECASE)
+
+        # Clean up: remove empty parentheses ``()`` or ``(  )``
+        lowered = re.sub(r'\(\s*\)', '', lowered)
+
+        # Clean up: remove stray `and`/`or` operators from collapsed structure
+        lowered = re.sub(r'\s+(and|or)\s+(and|or)\s+', ' ', lowered)
+
+        # Remove leading/trailing operators and dangling parens
+        lowered = re.sub(r'(^|[\s(])(and|or)\s+', ' ', lowered)
+        lowered = re.sub(r'\s+(and|or)(\s|[)])$', ' ', lowered)
+
+        # Flatten whitespace
+        lowered = re.sub(r'\s+', ' ', lowered).strip()
+
+        # Remove any remaining bare parens at edges
+        lowered = lowered.strip('() \t')
+
+        # Final cleanup: if the result is just an operator or empty, return ""
+        lowered = lowered.strip()
+        if lowered in ('and', 'or', '', '(', ')'):
+            return ""
+
+        return lowered
+
+    @staticmethod
+    def _split_chained_comparisons(pred: str) -> str:
+        """Split chained comparisons into a conjunction.
+
+        Handles the spec parser's nested binary format ``((a <= b) <= c)``
+        and produces ``(a ≤ b) ∧ (b ≤ c)``.
+        """
+        p = pred.strip()
+
+        # Multi-character operators MUST come before single-character ones
+        # to avoid matching ``<`` then ``=`` in ``<=``.
+        ops = r'<=|>=|!=|\u2264|\u2265|\u2260|<|>|='
+
+        # Match ((term1 op1 term2) op2 term3) — spec parser nested format
+        m = re.match(
+            r'^\(\((.+?)\s*(' + ops + r')\s*(.+?)\)\s*(' + ops + r')\s*(.+?)\)$',
+            p
+        )
+        if m:
+            t1, op1, t2, op2, t3 = m.groups()
+            return f"({t1.strip()} {op1.strip()} {t2.strip()}) \u2227 ({t2.strip()} {op2.strip()} {t3.strip()})"
+
+        # Flat format: term1 op1 term2 op2 term3 — only when NO logical
+        # connectives (∧, ∨) are present in the predicate. This prevents false
+        # matches where ``<`` and ``=`` appear in different sub-expressions
+        # separated by ``∧`` or ``∨`` (e.g., ``(x < lo) ∧ (y = hi)``).
+        if '\u2227' not in p and '\u2228' not in p \
+           and ' and ' not in p.lower() and ' or ' not in p.lower():
+            pattern = r'^(.*?)\s*(' + ops + r')\s*(.*?)\s*(' + ops + r')\s*(.*)$'
+            m = re.match(pattern, p)
+            if m:
+                term1, op1, term2, op2, term3 = m.groups()
+                return f"({term1.strip()} {op1.strip()} {term2.strip()}) \u2227 ({term2.strip()} {op2.strip()} {term3.strip()})"
+
+        return pred
+
+    @staticmethod
+    def _is_type_assertion(predicate: str) -> bool:
+        """Return True if the predicate is a mere type assertion (e.g. isinstance(n, int)).
+
+        Handles both simple calls like ``isinstance(x, int)`` and compound
+        forms like ``(isinstance(a, int) and isinstance(b, int))``.
+        """
+        # Strip outer parentheses
+        p = predicate.strip()
+        while p.startswith("(") and p.endswith(")"):
+            inner = p[1:-1].strip()
+            if inner.count("(") == inner.count(")"):
+                p = inner
+            else:
+                break
+
+        # Check for single isinstance/type call
+        lowered = p.lower()
+        if lowered.startswith("isinstance(") or lowered.startswith("type("):
+            return True
+
+        # Check for compound condition made up entirely of isinstance/type calls
+        # joined by ``and``/``or`` (possibly nested in parentheses).
+        stripped = re.sub(
+            r'\bisinstance\s*\([^)]*\)', '', lowered
+        )
+        stripped = re.sub(
+            r'\btype\s*\([^)]*\)', '', stripped
+        )
+        # Remove any remaining whitespace and logical tokens
+        stripped = stripped.replace(' ', '').replace('and', '')  \
+                          .replace('or', '').replace('(', '')   \
+                          .replace(')', '').strip()
+        return stripped == ''
 
     # ── Expression translation ────────────────────────────────────────────
 
     def translate_expression(self, expr: ExpressionIR) -> str:
-        """
-        Translate an Axiom Zero expression IR node to a Lean 4 expression string.
-
-        This is used for translating loop invariants, assertions, and conditions
-        into Lean syntax.
-        """
         if expr is None:
             return "True"
-
-        expr_type = expr.expr_type
-
-        if expr_type == "constant":
-            return self._translate_constant(expr.value)
-
-        if expr_type == "variable":
-            # Rename common Python variables to Lean conventions
-            name = expr.name
-            if name == "result":
-                return "result"
-            return name
-
-        if expr_type == "binary_op":
-            return self._translate_binary_op(expr)
-
-        if expr_type == "unary_op":
-            return self._translate_unary_op(expr)
-
-        if expr_type == "call":
-            return self._translate_call(expr)
-
-        if expr_type == "attribute":
-            return self._translate_attribute(expr)
-
-        if expr_type == "subscript":
-            return self._translate_subscript(expr)
-
-        if expr_type == "list":
-            return self._translate_list(expr)
-
-        if expr_type == "if_exp":
-            return self._translate_if_exp(expr)
-
-        return "True"  # safe fallback
+        dispatch = {
+            "constant": lambda e: self._translate_constant(e.value),
+            "variable": lambda e: e.name,
+            "binary_op": self._translate_binary_op,
+            "unary_op": self._translate_unary_op,
+            "call": self._translate_call,
+            "attribute": self._translate_attribute,
+            "subscript": self._translate_subscript,
+            "list": self._translate_list,
+            "if_exp": self._translate_if_exp,
+        }
+        handler = dispatch.get(expr.expr_type)
+        if handler:
+            return handler(expr)
+        return "True"
 
     def _translate_constant(self, value: Any) -> str:
         if isinstance(value, bool):
@@ -384,10 +580,7 @@ class IRToLeanCompiler:
         if isinstance(value, int):
             return str(value)
         if isinstance(value, float):
-            # Use rational notation if integer-valued
-            if value == int(value):
-                return f"({int(value)} : ℝ)"
-            return f"({value} : ℝ)"
+            return f"({value} : \u211d)" if value != int(value) else f"({int(value)} : \u211d)"
         if isinstance(value, str):
             return f'"{value}"'
         if value is None:
@@ -397,31 +590,24 @@ class IRToLeanCompiler:
     def _translate_binary_op(self, expr: ExpressionIR) -> str:
         left = self.translate_expression(expr.left) if expr.left else "?"
         right = self.translate_expression(expr.right) if expr.right else "?"
-        op = expr.op
-
-        lean_op = _BINOP_TO_LEAN.get(op, f" {op} ")
-        return f"({left}{lean_op}{right})"
+        op = _BINOP_TO_LEAN.get(expr.op, f" {expr.op} ")
+        return f"({left}{op}{right})"
 
     def _translate_unary_op(self, expr: ExpressionIR) -> str:
         operand = self.translate_expression(expr.operand) if expr.operand else "?"
-        op = expr.op
-        lean_op = _UNOP_TO_LEAN.get(op, op)
-        return f"({lean_op}{operand})"
+        op = _UNOP_TO_LEAN.get(expr.op, expr.op)
+        return f"({op}{operand})"
 
     def _translate_call(self, expr: ExpressionIR) -> str:
         func_name = ""
         if expr.func:
             func_name = self.translate_expression(expr.func)
-
         args = [self.translate_expression(a) for a in expr.args]
-
-        # Map known Python functions to Lean equivalents
         name = func_name.lower()
 
         if name in ("abs",):
-            return f"(abs {args[0]})" if args else f"(abs ?_)"
+            return f"(abs {args[0]})" if args else "(abs ?_)"
         if name in ("len",):
-            # Lean: List.length, Finset.card, etc.
             return f"({args[0]}.length)" if args else "(?_.length)"
         if name in ("max", "min"):
             return f"({name} {args[0]} {args[1]})" if len(args) >= 2 else f"({name} {args[0]})"
@@ -429,25 +615,14 @@ class IRToLeanCompiler:
             return f"(Finset.range {args[0]})" if args else "(Finset.range ?_)"
         if name in ("int", "float", "str", "bool"):
             return args[0] if args else "?"
-
-        # Generic function application
         if func_name:
             return f"({func_name} {' '.join(args)})"
-
         return f"(? {', '.join(args)})" if args else "?"
 
     def _translate_attribute(self, expr: ExpressionIR) -> str:
         target = self.translate_expression(expr.target) if expr.target else "?"
-        attr = expr.attr
-
-        if attr in ("shape",):
-            return f"({target}.shape)"
-        if attr in ("length",):
-            return f"({target}.length)"
-        if attr == "T":
-            return f"({target}.transpose)"
-
-        return f"({target}.{attr})"
+        attr_map = {"shape": f"({target}.shape)", "length": f"({target}.length)", "T": f"({target}.transpose)"}
+        return attr_map.get(expr.attr, f"({target}.{expr.attr})")
 
     def _translate_subscript(self, expr: ExpressionIR) -> str:
         target = self.translate_expression(expr.target) if expr.target else "?"
@@ -467,63 +642,32 @@ class IRToLeanCompiler:
     # ── Type translation ──────────────────────────────────────────────────
 
     def translate_type(self, py_type: str) -> str:
-        """
-        Translate a Python type string to a Lean 4 type string.
-
-        Args:
-            py_type: A Python type name (e.g., "int", "List[int]", "Optional[str]").
-
-        Returns:
-            Lean 4 type string (e.g., "ℤ", "List ℤ", "Option String").
-        """
+        """Translate a Python type string to a Lean 4 type string."""
         py_type = py_type.strip()
-
-        # Handle generic types: List[int], Optional[str], etc.
+        if not py_type:
+            return "\u2124"
         if "[" in py_type and py_type.endswith("]"):
             base = py_type[: py_type.index("[")]
-            inner = py_type[py_type.index("[") + 1 : -1]
+            inner = py_type[py_type.index("[") + 1: -1]
             base_lean = _PY_TYPE_TO_LEAN.get(base, base)
             inner_lean = self.translate_type(inner)
             return f"{base_lean} {inner_lean}"
-
-        # Simple types
         return _PY_TYPE_TO_LEAN.get(py_type, py_type)
 
     # ── Utility ───────────────────────────────────────────────────────────
 
     @staticmethod
     def obligation_to_predicate_lean(ob: ProofObligation) -> str:
-        """
-        Convert a proof obligation's predicate to a Lean 4 proposition string.
-
-        This handles common Python idioms in predicates:
-        - ``result`` → ``result`` (the Lean binder)
-        - ``==`` → ``=``
-        - ``!=`` → ``≠``
-        - ``and``/``or``/``not`` → ``∧``/``∨``/``¬``
-        - ``True``/``False`` → ``true``/``false``
-
-        Args:
-            ob: The proof obligation.
-
-        Returns:
-            Lean 4 proposition string.
-        """
+        """Convert a proof obligation's predicate to a Lean 4 proposition string."""
         pred = ob.predicate.strip()
-
-        # Use string replacements for common patterns
         replacements = [
-            ("==", "="),
-            ("!=", " ≠ "),
-            (" and ", " ∧ "),
-            (" or ", " ∨ "),
-            ("not ", "¬ "),
-            ("True", "true"),
-            ("False", "false"),
+            ("==", "="), ("!=", " \u2260 "), (" and ", " \u2227 "), (" or ", " \u2228 "),
+            ("not ", "\u00ac "), ("True", "true"), ("False", "false"),
         ]
         for old, new in replacements:
             pred = pred.replace(old, new)
+        return re.sub(r'\s+', ' ', pred).strip()
 
-        # Normalize whitespace: collapse multiple spaces
-        pred = re.sub(r'\s+', ' ', pred).strip()
-        return pred
+    @staticmethod
+    def _format_proof_block(tactic: str) -> str:
+        return f"  by\n    {tactic}"

@@ -1,43 +1,10 @@
-"""
-Axiom Zero - Monte Carlo Tree Search (MCTS)
-Phase 3: RL Agent
+"""AlphaZero-style Monte Carlo Tree Search for proof search.
 
-AlphaZero-style MCTS adapted for proof search.
+U(s, a) = Q(s, a) + c_puct * P(s, a) * sqrt(N(s)) / (1 + N(s, a))
 
-Key differences from game MCTS
--------------------------------
-- States are ProofState objects (immutable snapshots after each tactic).
-- Actions are tactic strings from CORE_TACTICS (39 actions).
-- The environment is *stochastic at the proof level*: the same tactic can
-  result in different subgoals depending on Lean's elaboration.  We model
-  this as deterministic for now (same tactic → same child state), which
-  holds when Lean is deterministic for a given proof state.
-- Terminal states: is_complete == True  → reward +1
-                   max_depth reached    → reward 0
-                   tactic failed        → reward -1 (not expanded further)
-- We run MCTS *without* a live Lean server in Phase 3 simulation mode.
-  The TacticSimulator (below) approximates tactic outcomes so the MCTS
-  loop can be tested end-to-end.  When a real LeanEnv is available,
-  swap it in via RealTacticSimulator:
-
-    from proof_engine import LeanEnv, TacticExecutor
-    lean = LeanEnv(lean_path="lean", verbose=True)
-    lean.start()
-    executor = TacticExecutor(lean)
-    sim = RealTacticSimulator(lean, executor)
-
-    mcts = MCTS(net, simulator=sim, num_simulations=50)
-
-Algorithm  (AlphaZero UCB)
---------------------------
-  U(s, a) = Q(s, a) + c_puct * P(s, a) * sqrt(N(s)) / (1 + N(s, a))
-
-  where:
-    Q(s, a) = mean value of positions reached by action a from s
-    P(s, a) = prior probability from the policy network
-    N(s)    = visit count of parent node s
-    N(s, a) = visit count of edge (s, a)
-    c_puct  = exploration constant (default 1.5)
+States are ProofState objects, actions are tactic strings (39 from CORE_TACTICS).
+The TacticSimulator approximates tactic outcomes for testing; swap in
+RealTacticSimulator (backed by LeanEnv) for production.
 """
 
 from __future__ import annotations
@@ -68,11 +35,7 @@ DIRICHLET_EPSILON = 0.25
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _python_predicate_to_lean(predicate: str) -> str:
-    """Convert Python-style predicate syntax to Lean 4.
-
-    Replaces ``==`` with ``=``, ``!=`` with ``≠``,
-    `` and `` with `` ∧ ``, `` or `` with `` ∨ ``, etc.
-    """
+    """Convert Python-style predicate syntax to Lean 4 (e.g. == → =, and → ∧)."""
     pred = predicate.strip()
     pred = pred.replace("==", " = ")
     pred = pred.replace("!=", " ≠ ")
@@ -87,26 +50,16 @@ def _python_predicate_to_lean(predicate: str) -> str:
 # ── Tactic Simulator (Phase 3 stand-in for a live LeanEnv) ──────────────────
 
 class TacticSimulator:
-    """
-    Simulates tactic application without a running Lean server.
+    """Simulates tactic application without a running Lean server (for testing).
 
-    Used for end-to-end testing of the MCTS loop.  The simulator uses the
-    heuristic `suggest_tactics_for_goal` to decide whether a tactic is
-    "likely to succeed" and produces plausible synthetic proof states.
-
-    Replace this with a real TacticExecutor backed by LeanEnv for production.
+    Uses ``suggest_tactics_for_goal`` to determine tactic success and produces
+    synthetic proof states. Replace with ``RealTacticSimulator`` for production.
     """
 
     def apply(
         self, state: ProofState, tactic: str
     ) -> Tuple[bool, ProofState, float]:
-        """
-        Apply `tactic` to `state`.
-
-        Returns:
-            (success, new_state, reward)
-            reward: +1.0 if proof complete, -0.1 per tactic (cost), -1.0 on fail
-        """
+        """Apply tactic to state, returning (success, new_state, reward)."""
         if not state.open_goals:
             return False, state, 0.0
 
@@ -177,28 +130,10 @@ class TacticSimulator:
 # ── Real Tactic Simulator (production, backed by Lean 4 server) ─────────────
 
 class RealTacticSimulator:
-    """
-    Production tactic simulator backed by a real Lean 4 server.
+    """Production tactic simulator backed by a real Lean 4 server.
 
-    Wraps ``LeanEnv`` + ``TacticExecutor`` to implement the
-    ``apply(state, tactic)`` interface that MCTS expects.
-
-    Each call to ``apply()`` creates a **fresh** Lean file with the full
-    proof replayed up to that point, so MCTS can branch freely without
-    cross-contamination between exploration paths.
-
-    Usage::
-
-        from proof_engine import LeanEnv, TacticExecutor
-        from rl_agent import MCTS, RealTacticSimulator
-
-        lean = LeanEnv(lean_path="lean", verbose=True)
-        lean.start()
-        executor = TacticExecutor(lean)
-        sim = RealTacticSimulator(lean, executor)
-
-        mcts = MCTS(net, simulator=sim, num_simulations=50)
-        action_probs, value = mcts.search(initial_state)
+    Each call to ``apply()`` creates a fresh Lean file replaying the full proof
+    history, so MCTS can branch freely without cross-contamination.
     """
 
     def __init__(
@@ -206,26 +141,14 @@ class RealTacticSimulator:
         lean_env: LeanEnv,
         executor: TacticExecutor,
     ) -> None:
-        """
-        Args:
-            lean_env: An initialised ``LeanEnv`` instance (already started).
-            executor: A ``TacticExecutor`` instance wrapping ``lean_env``.
-        """
+        """Wrap a running LeanEnv and TacticExecutor for MCTS integration."""
         self.lean_env = lean_env
         self.executor = executor
 
     def apply(
         self, state: ProofState, tactic: str
     ) -> Tuple[bool, ProofState, float]:
-        """
-        Apply ``tactic`` to ``state`` using the real Lean 4 server.
-
-        Creates a fresh Lean file replaying the full tactic history,
-        applies the new tactic, and reports the resulting goals.
-
-        Returns:
-            (success, new_state, reward)
-        """
+        """Apply tactic using the real Lean 4 server, creating a fresh file per call."""
         if not state.open_goals:
             return False, state, 0.0
 
@@ -336,9 +259,9 @@ class RealTacticSimulator:
 class MCTSNode:
     """A single node in the MCTS tree."""
     state: ProofState
-    prior: float = 0.0          # P(s, a) from parent
-    visit_count: int = 0        # N(s, a)
-    value_sum: float = 0.0      # sum of backed-up values
+    prior: float = 0.0
+    visit_count: int = 0
+    value_sum: float = 0.0
     children: Dict[str, "MCTSNode"] = field(default_factory=dict)
     is_terminal: bool = False
     terminal_value: float = 0.0
@@ -362,16 +285,7 @@ class MCTSNode:
 # ── MCTS Search ──────────────────────────────────────────────────────────────
 
 class MCTS:
-    """
-    AlphaZero-style MCTS for proof search.
-
-    Args:
-        net          : PolicyValueNet — provides (priors, value) for a state
-        simulator    : ``TacticSimulator`` (heuristic) or ``RealTacticSimulator``
-                       (real Lean 4 server).  Defaults to ``TacticSimulator``.
-        num_simulations: number of MCTS rollouts per search call
-        c_puct       : exploration constant
-    """
+    """AlphaZero-style MCTS for proof search."""
 
     def __init__(
         self,
@@ -389,14 +303,7 @@ class MCTS:
     # ── Public API ────────────────────────────────────────────────────────
 
     def search(self, root_state: ProofState) -> Tuple[List[float], float]:
-        """
-        Run MCTS from root_state.
-
-        Returns:
-            (action_probs, root_value)
-            action_probs : visit-count policy (length NUM_ACTIONS), sums to 1
-            root_value   : estimated value of root
-        """
+        """Run MCTS from root_state, returning (action_probs, root_value)."""
         root = MCTSNode(state=root_state)
         self._expand(root)
         self._add_dirichlet_noise(root)
@@ -425,7 +332,7 @@ class MCTS:
         return action_probs, root.q_value
 
     def best_action(self, root_state: ProofState) -> str:
-        """Return the tactic with the highest visit count after search."""
+        """Return the highest-visit-count tactic after search."""
         action_probs, _ = self.search(root_state)
         best_idx = max(range(len(action_probs)), key=lambda i: action_probs[i])
         return self._tactic_list[best_idx]
@@ -433,14 +340,7 @@ class MCTS:
     # ── Internal methods ──────────────────────────────────────────────────
 
     def _expand(self, node: MCTSNode) -> float:
-        """
-        Expand node using the policy/value network and simulate all tactic outcomes.
-
-        Each child gets its state set via the simulator immediately,
-        so _select only needs to traverse without calling the simulator.
-
-        Returns the value estimate for backup.
-        """
+        """Expand node using network predictions and simulate all tactic outcomes."""
         if node.state.is_complete:
             node.is_terminal = True
             node.terminal_value = 1.0
@@ -471,16 +371,7 @@ class MCTS:
         return value
 
     def _select(self, root: MCTSNode) -> Tuple[MCTSNode, List[Tuple[MCTSNode, str]]]:
-        """
-        Traverse the tree from root, selecting children by UCB score.
-
-        Simulation is done during _expand, so this method only traverses
-        using UCB without calling the simulator.
-
-        Returns:
-            (leaf_node, path)
-            path: list of (node, action) pairs leading to the leaf
-        """
+        """Traverse tree by UCB score, returning (leaf_node, path)."""
         node = root
         path: List[Tuple[MCTSNode, str]] = []
 

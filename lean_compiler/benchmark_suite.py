@@ -1,20 +1,15 @@
-"""
-Axiom Zero - Phase 4: Benchmark Suite
+"""Axiom Zero — Phase 4: Benchmark Suite
 
 A collection of benchmark problems for evaluating the compiler and RL agent.
 Each benchmark consists of a Python function with formal specifications and an
 expected Lean 4 proof.
 
 Problems are organised by difficulty:
-  - **Level 1**: Pure arithmetic (add, subtract, multiply, absolute value)
-  - **Level 2**: Conditional arithmetic (max, min, sign)
-  - **Level 3**: List algorithms (sum, reverse, length properties)
-  - **Level 4**: Loop invariants (factorial, fibonacci)
-  - **Level 5**: Tensor shape constraints (for PyTorch operations)
-
-The benchmark runner verifies that the compiler produces valid Lean 4 output
-for each problem, optionally checking that the generated proofs compile with
-the Lean 4 kernel.
+  - Level 1: Pure arithmetic (add, subtract, multiply, absolute value)
+  - Level 2: Conditional arithmetic (max, min, sign)
+  - Level 3: List algorithms (sum, reverse, length properties)
+  - Level 4: Loop invariants (factorial, fibonacci)
+  - Level 5: Tensor shape constraints (for PyTorch operations)
 """
 
 from __future__ import annotations
@@ -26,16 +21,15 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 @dataclass
 class BenchmarkProblem:
-    """
-    A single benchmark problem.
+    """A single benchmark problem.
 
     Attributes:
-        name              : Human-readable name (e.g., "absolute_value")
-        source            : Python source code with @requires/@ensures decorators.
-        difficulty        : 1–5 difficulty level.
-        description       : Short description of what is being proved.
-        expected_theorems : Expected theorem names in the generated Lean code.
-        tags              : Tags for filtering (e.g., "arithmetic", "list", "loop").
+        name: Human-readable name (e.g., "absolute_value").
+        source: Python source code with @requires/@ensures decorators.
+        difficulty: 1–5 difficulty level.
+        description: Short description of what is being proved.
+        expected_theorems: Expected theorem names in the generated Lean code.
+        tags: Tags for filtering (e.g., "arithmetic", "list", "loop").
     """
     name: str
     source: str
@@ -57,26 +51,12 @@ class BenchmarkResult:
 
 
 class BenchmarkSuite:
-    """
-    Collection of benchmark problems with a runner.
-
-    Usage
-    -----
-        suite = BenchmarkSuite()
-        suite.add_problem(...)
-        results = suite.run_all(compile_func)
-    """
+    """Collection of benchmark problems with a runner."""
 
     def __init__(self) -> None:
-        self._problems: List[BenchmarkProblem] = []
-        self._register_defaults()
-
-    def _register_defaults(self) -> None:
-        """Register the built-in benchmark problems."""
-        self._problems = _BUILTIN_BENCHMARKS.copy()
+        self._problems: List[BenchmarkProblem] = _BUILTIN_BENCHMARKS.copy()
 
     def add_problem(self, problem: BenchmarkProblem) -> None:
-        """Add a custom benchmark problem."""
         self._problems.append(problem)
 
     @property
@@ -104,16 +84,12 @@ class BenchmarkSuite:
         compile_func: Callable[[str, str], str],
         module_prefix: str = "benchmark",
     ) -> List[BenchmarkResult]:
-        """
-        Run all benchmark problems through the compiler.
+        """Run all benchmark problems through the compiler.
 
         Args:
-            compile_func  : A function that takes (source, module_name) and
-                            returns the generated Lean 4 code as a string.
-            module_prefix : Prefix for generated module names.
-
-        Returns:
-            List of BenchmarkResult, one per problem.
+            compile_func: A function that takes (source, module_name) and returns
+                          the generated Lean 4 code as a string.
+            module_prefix: Prefix for generated module names.
         """
         results: List[BenchmarkResult] = []
         for problem in self._problems:
@@ -121,47 +97,35 @@ class BenchmarkSuite:
                 lean_code = compile_func(problem.source, f"{module_prefix}_{problem.name}")
                 result = self._analyze_output(problem, lean_code)
             except Exception as e:
-                result = BenchmarkResult(
-                    name=problem.name,
-                    success=False,
-                    error=str(e),
-                )
+                result = BenchmarkResult(name=problem.name, success=False, error=str(e))
             results.append(result)
         return results
 
-    def _analyze_output(
-        self,
-        problem: BenchmarkProblem,
-        lean_code: str,
-    ) -> BenchmarkResult:
+    def _analyze_output(self, problem: BenchmarkProblem, lean_code: str) -> BenchmarkResult:
         """Analyze the generated Lean output for a benchmark."""
-        # Extract actual theorem names from the output
         theorem_names = re.findall(r"theorem\s+(\S+)", lean_code)
         num_theorems = len(theorem_names)
         num_holes = lean_code.count("sorry")
 
-        # Check expected theorems exist — match as substrings of actual theorem names
-        all_found = True
-        for expected in problem.expected_theorems:
-            found = any(expected in name for name in theorem_names)
-            if not found:
-                all_found = False
-
-        success = all_found
+        all_found = all(
+            any(expected in name for name in theorem_names)
+            for expected in problem.expected_theorems
+        )
 
         return BenchmarkResult(
             name=problem.name,
-            success=success,
+            success=all_found,
             lean_output=lean_code,
             num_theorems=num_theorems,
             num_holes_remaining=num_holes,
-            error=None if success else (
+            error=None if all_found else (
                 f"Expected theorems not found. Looking for: {problem.expected_theorems}\n"
                 f"Actual theorem names: {theorem_names}"
             ),
         )
 
-    def summary(self, results: List[BenchmarkResult]) -> str:
+    @staticmethod
+    def summary(results: List[BenchmarkResult]) -> str:
         """Produce a human-readable summary of benchmark results."""
         total = len(results)
         passed = sum(1 for r in results if r.success)
@@ -181,117 +145,100 @@ class BenchmarkSuite:
             "",
             "  Details:",
         ]
-
         for r in results:
             status = "OK" if r.success else "FAIL"
-            lines.append(
-                f"    [{status}] {r.name:30s}  "
-                f"thms={r.num_theorems}  "
-                f"holes={r.num_holes_remaining}"
-            )
+            lines.append(f"    [{status}] {r.name:30s}  thms={r.num_theorems}  holes={r.num_holes_remaining}")
             if r.error:
                 lines.append(f"          error: {r.error}")
-
         if failed > 0:
-            lines.append("")
-            lines.append(f"  X {failed} benchmark(s) failed - see above for details.")
-
+            lines.append(f"\n  X {failed} benchmark(s) failed — see above for details.")
         lines.append("")
         return "\n".join(lines)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# Built-in benchmark problems
-# ═════════════════════════════════════════════════════════════════════════════
+# ── Built-in benchmark problems ─────────────────────────────────────────────
 
 _BUILTIN_BENCHMARKS: List[BenchmarkProblem] = [
-    # ── Level 1: Pure arithmetic ───────────────────────────────────────────
+    # Level 1: Pure arithmetic
     BenchmarkProblem(
-        name="add_positive",
-        difficulty=1,
+        name="add_positive", difficulty=1,
         description="If x > 0 and y > 0, then x + y > 0.",
         tags=["arithmetic", "precondition"],
         expected_theorems=["add_positive"],
-        source="""
+        source='''
 @requires("x > 0")
 @requires("y > 0")
 @ensures("result > 0")
 def add_positive(x: int, y: int) -> int:
     return x + y
-""",
+''',
     ),
     BenchmarkProblem(
-        name="add_commutative",
-        difficulty=1,
+        name="add_commutative", difficulty=1,
         description="Addition is commutative: x + y == y + x.",
         tags=["arithmetic", "equality"],
         expected_theorems=["add_commutative"],
-        source="""
+        source='''
 @ensures("result == x + y")
 def add_commutative(x: int, y: int) -> int:
     return x + y
-""",
+''',
     ),
     BenchmarkProblem(
-        name="absolute_value",
-        difficulty=1,
+        name="absolute_value", difficulty=1,
         description="Absolute value returns a non-negative result.",
         tags=["arithmetic", "conditional"],
         expected_theorems=["absolute_value"],
-        source="""
+        source='''
 @requires("x > 0")
 @ensures("result > 0")
 def absolute_value(x: int) -> int:
     if x < 0:
         return -x
     return x
-""",
+''',
     ),
     BenchmarkProblem(
-        name="zero_identity",
-        difficulty=1,
+        name="zero_identity", difficulty=1,
         description="x + 0 == x and 0 + x == x (additive identity).",
         tags=["arithmetic", "equality"],
         expected_theorems=["zero_identity"],
-        source="""
+        source='''
 @ensures("result == x + 0")
 def zero_identity(x: int) -> int:
     return x + 0
-""",
+''',
     ),
     BenchmarkProblem(
-        name="multiply_by_one",
-        difficulty=1,
+        name="multiply_by_one", difficulty=1,
         description="x * 1 == x (multiplicative identity).",
         tags=["arithmetic", "equality"],
         expected_theorems=["multiply_by_one"],
-        source="""
+        source='''
 @ensures("result == x * 1")
 def multiply_by_one(x: int) -> int:
     return x * 1
-""",
+''',
     ),
     BenchmarkProblem(
-        name="double",
-        difficulty=1,
+        name="double", difficulty=1,
         description="Double a number: result == 2 * x.",
         tags=["arithmetic"],
         expected_theorems=["double"],
-        source="""
+        source='''
 @ensures("result == 2 * x")
 def double(x: int) -> int:
     return x + x
-""",
+''',
     ),
 
-    # ── Level 2: Conditional arithmetic ───────────────────────────────────
+    # Level 2: Conditional arithmetic
     BenchmarkProblem(
-        name="max_of_two",
-        difficulty=2,
+        name="max_of_two", difficulty=2,
         description="Maximum of two numbers — result >= both inputs.",
         tags=["arithmetic", "conditional"],
         expected_theorems=["max_of_two"],
-        source="""
+        source='''
 @requires("x >= 0")
 @requires("y >= 0")
 @ensures("result >= x")
@@ -300,74 +247,69 @@ def max_of_two(x: int, y: int) -> int:
     if x >= y:
         return x
     return y
-""",
+''',
     ),
     BenchmarkProblem(
-        name="sign_function",
-        difficulty=2,
+        name="sign_function", difficulty=2,
         description="Sign function: returns 1, 0, or -1.",
         tags=["arithmetic", "conditional"],
         expected_theorems=["sign_function"],
-        source="""
+        source='''
 @requires("x != 0")
 @ensures("result == 1 or result == -1")
 def sign_function(x: int) -> int:
     if x > 0:
         return 1
     return -1
-""",
+''',
     ),
     BenchmarkProblem(
-        name="subtract_positive",
-        difficulty=2,
+        name="subtract_positive", difficulty=2,
         description="If x > y, then x - y > 0.",
         tags=["arithmetic", "conditional"],
         expected_theorems=["subtract_positive"],
-        source="""
+        source='''
 @requires("x > y")
 @ensures("result > 0")
 def subtract_positive(x: int, y: int) -> int:
     return x - y
-""",
+''',
     ),
 
-    # ── Level 3: List algorithms ──────────────────────────────────────────
+    # Level 3: List algorithms
     BenchmarkProblem(
-        name="list_sum_positive",
-        difficulty=3,
+        name="list_sum_positive", difficulty=3,
         description="Sum of a list of positive numbers is positive.",
         tags=["list", "arithmetic"],
         expected_theorems=["list_sum_positive"],
-        source="""
+        source='''
 @ensures("result >= 0")
 def list_sum_positive(lst: List[int]) -> int:
     total = 0
     for x in lst:
         total = total + x
     return total
-""",
+''',
     ),
     BenchmarkProblem(
-        name="list_length_nonneg",
-        difficulty=3,
+        name="list_length_nonneg", difficulty=3,
         description="Length of a list is non-negative.",
         tags=["list", "property"],
         expected_theorems=["list_length_nonneg"],
-        source="""
+        source='''
 @ensures("result >= 0")
 def list_length_nonneg(lst: List[int]) -> int:
     return len(lst)
-""",
+''',
     ),
 
-    # ── Level 4: Loop invariants ──────────────────────────────────────────
+    # Level 4: Loop invariants
     BenchmarkProblem(
-        name="factorial",
-        difficulty=4,
+        name="factorial", difficulty=4,
         description="Factorial of a non-negative integer.",
         tags=["loop", "arithmetic"],
         expected_theorems=["factorial"],
-        source="""
+        source='''
 @requires("n >= 0")
 @ensures("result >= 1")
 def factorial(n: int) -> int:
@@ -377,22 +319,21 @@ def factorial(n: int) -> int:
     for i in range(1, n + 1):
         result = result * i
     return result
-""",
+''',
     ),
 
-    # ── Level 5: Tensor / advanced ────────────────────────────────────────
+    # Level 5: Tensor / advanced
     BenchmarkProblem(
-        name="tensor_add",
-        difficulty=5,
+        name="tensor_add", difficulty=5,
         description="Adding two tensors preserves shape.",
         tags=["tensor", "shape"],
         expected_theorems=["tensor_add"],
-        source="""
+        source='''
 @requires("is_tensor(x)")
 @requires("is_tensor(y)")
 def tensor_add(x: Tensor, y: Tensor) -> Tensor:
     return x + y
-""",
+''',
     ),
 ]
 
@@ -401,7 +342,6 @@ def list_benchmarks(difficulty: Optional[int] = None, tag: Optional[str] = None)
     """Return a human-readable list of all benchmarks."""
     suite = BenchmarkSuite()
     problems = suite.filter(difficulty=difficulty, tag=tag)
-
     lines = [
         "=" * 60,
         "AXIOM ZERO — BENCHMARK SUITE",
@@ -411,10 +351,8 @@ def list_benchmarks(difficulty: Optional[int] = None, tag: Optional[str] = None)
         "",
         "  Difficulty 1 — Pure Arithmetic:",
     ]
-
     for p in problems:
         diff_stars = "*" * p.difficulty
         lines.append(f"    {p.name:30s} [{diff_stars}]  {p.description}")
-
     lines.append("")
     return "\n".join(lines)

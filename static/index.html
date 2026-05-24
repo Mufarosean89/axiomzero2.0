@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Axiom Zero — Neural Network Verification</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header>
+            <div class="header-left">
+                <div class="logo">
+                    <i class="fa-solid fa-infinity"></i>
+                    <h1>Axiom Zero</h1>
+                </div>
+                <span class="badge">v0.1</span>
+            </div>
+            <div class="header-right">
+                <span class="header-status">
+                    <span class="status-dot"></span>
+                    Python → Lean 4
+                </span>
+            </div>
+        </header>
+
+        <!-- Main Layout -->
+        <main class="main-grid">
+            <!-- Python Input Panel -->
+            <div class="panel input-panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <i class="fa-brands fa-python"></i>
+                        <span>Python Source</span>
+                    </div>
+                    <div class="panel-header-actions">
+                        <button id="clear-btn" class="icon-btn" title="Clear input">
+                            <i class="fa-regular fa-trash-can"></i>
+                        </button>
+                        <button id="samples-btn" class="icon-btn" title="Load sample">
+                            <i class="fa-regular fa-folder-open"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="editor-wrapper">
+                    <div class="line-numbers" id="input-line-numbers">
+                        <div class="line-number">1</div>
+                    </div>
+                    <textarea id="python-input"
+                        spellcheck="false"
+                        autocorrect="off"
+                        autocomplete="off"
+                        placeholder='@requires("x > 0")
+@ensures("result > 0")
+def absolute(x: int) -> int:
+    if x < 0:
+        return -x
+    return x'></textarea>
+                </div>
+                <div class="panel-footer">
+                    <div class="footer-left">
+                        <span class="key-hint"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> to compile</span>
+                    </div>
+                    <div class="footer-right">
+                        <button id="compile-btn" class="primary-btn">
+                            <i class="fa-solid fa-arrow-right-to-bracket"></i>
+                            <span>Compile to Lean 4</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Column: Output + Error -->
+            <div class="output-column">
+                <!-- Lean Output Panel -->
+                <div class="panel output-panel">
+                    <div class="panel-header">
+                        <div class="panel-title">
+                            <i class="fa-solid fa-file-code"></i>
+                            <span>Lean 4 Proof</span>
+                        </div>
+                        <div class="panel-header-actions">
+                            <div id="loading-indicator" class="hidden">
+                                <div class="spinner"></div>
+                                <span>Compiling...</span>
+                            </div>
+                            <button id="copy-btn" class="icon-btn" disabled title="Copy to clipboard">
+                                <i class="fa-regular fa-copy"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="editor-wrapper output-wrapper">
+                        <div class="line-numbers" id="output-line-numbers">
+                            <div class="line-number" data-ln="1">1</div>
+                        </div>
+                        <pre id="lean-output" class="hljs"><code id="lean-code" class="language-lean"><span class="hljs-comment">/* Click "Compile to Lean 4" to generate a formal proof */</span></code></pre>
+                        <div id="error-panel" class="hidden">
+                            <div class="error-header">
+                                <i class="fa-solid fa-circle-exclamation"></i>
+                                <span>Compilation Error</span>
+                                <button id="error-toggle" class="icon-btn-small" title="Toggle details">
+                                    <i class="fa-solid fa-chevron-down"></i>
+                                </button>
+                            </div>
+                            <div id="error-details" class="error-details hidden">
+                                <pre id="error-content"></pre>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="panel-footer">
+                        <div class="footer-left">
+                            <span id="output-stats" class="output-stats"></span>
+                        </div>
+                        <div class="footer-right">
+                            <button id="download-btn" class="secondary-btn" disabled>
+                                <i class="fa-solid fa-download"></i> Download .lean
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Sample Selector Modal -->
+        <div id="samples-modal" class="modal hidden">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2><i class="fa-regular fa-folder-open"></i> Sample Programs</h2>
+                    <button class="icon-btn modal-close" id="samples-modal-close">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <p class="modal-subtitle">Choose a sample program to compile into a Lean 4 proof.</p>
+                    <div class="sample-list" id="sample-list">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

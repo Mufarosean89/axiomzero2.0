@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+*.so
+
+# Lean
+lake-packages/
+_lake/
+build/
+*.olean
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temp
+*.log
+*.tmp
+.lean_workspace_cache/

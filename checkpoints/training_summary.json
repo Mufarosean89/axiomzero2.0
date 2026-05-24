@@ -1,0 +1,88 @@
+{
+  "proof_states_count": 50,
+  "seed_examples_count": 179623,
+  "iterations": 10,
+  "episodes_per_iteration": 5,
+  "mcts_simulations": 50,
+  "pretrain_epochs": 5,
+  "final_buffer_size": 1000,
+  "stats": [
+    {
+      "phase": "supervised_pretrain",
+      "pretrain_epochs": 5,
+      "pretrain_policy_loss": 3.643109272552107,
+      "pretrain_value_loss": 0.34509120061872134,
+      "buffer_size": 1000
+    },
+    {
+      "iteration": 1,
+      "win_rate": 1.0,
+      "policy_loss": 3.609230637355257,
+      "value_loss": 0.10481976963654309,
+      "buffer_size": 1000
+    },
+    {
+      "iteration": 2,
+      "win_rate": 0.8,
+      "policy_loss": 3.630721929394246,
+      "value_loss": 0.08440787558287996,
+      "buffer_size": 1000
+    },
+    {
+      "iteration": 3,
+      "win_rate": 1.0,
+      "policy_loss": 3.5775694510137432,
+      "value_loss": 0.08898337183101247,
+      "buffer_size": 1000
+    },
+    {
+      "iteration": 4,
+      "win_rate": 0.8,
+      "policy_loss": 3.59718566136312,
+      "value_loss": 0.09600851821407676,
+      "buffer_size": 1000
+    },
+    {
+      "iteration": 5,
+      "win_rate": 1.0,
+      "policy_loss": 3.616158738077455,
+      "value_loss": 0.08592826874544712,
+      "buffer_size": 1000
+    },
+    {
+      "iteration": 6,
+      "win_rate": 0.8,
+      "policy_loss": 3.6733992320136797,
+      "value_loss": 0.09362910198387045,
+      "buffer_size": 1000
+    },
+    {
+      "iteration": 7,
+      "win_rate": 1.0,
+      "policy_loss": 3.5885099682532515,
+      "value_loss": 0.07214929899530782,
+      "buffer_size": 1000
+    },
+    {
+      "iteration": 8,
+      "win_rate": 1.0,
+      "policy_loss": 3.616912940678575,
+      "value_loss": 0.08602956147099307,
+      "buffer_size": 1000
+    },
+    {
+      "iteration": 9,
+      "win_rate": 0.8,
+      "policy_loss": 3.5544603677414957,
+      "value_loss": 0.07567358015679818,
+      "buffer_size": 1000
+    },
+    {
+      "iteration": 10,
+      "win_rate": 1.0,
+      "policy_loss": 3.575885723168942,
+      "value_loss": 0.10293008997959482,
+      "buffer_size": 1000
+    }
+  ]
+}

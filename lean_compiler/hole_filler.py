@@ -41,6 +41,9 @@ _SIMP_SIMP_PATTERNS: List[re.Pattern] = [
     re.compile(r"^\s*\w+\s*<\s*0\s*$"),
     re.compile(r"^\s*\w+\s*>=\s*0\s*$"),
     re.compile(r"^\s*\w+\s*<=\s*0\s*$"),
+    # Negation patterns on Bool (e.g., (not result) == b)
+    # "result" is the postcondition placeholder replaced with the function call
+    re.compile(r"^.*\bnot\s+result\b.*==.*$", re.IGNORECASE),
 ]
 
 _OMEGA_PATTERNS: List[re.Pattern] = [

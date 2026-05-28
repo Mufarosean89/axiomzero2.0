@@ -156,14 +156,24 @@ class IRToLeanCompiler:
         """Generate a single ``def`` from a FunctionIR node."""
         func_name = f"{class_name}.{func.signature.name}" if class_name else func.signature.name
 
+        # Determine which int params should be \u2115 (recursive + \u2265 0 precondition)
+        nat_params = self._get_nat_params(func, func_name)
+
         # Parameter binders  (p : Type)
         param_binders: List[str] = []
         for param in func.signature.parameters:
             lean_type = self.translate_type(param.type.to_string()) if param.type else "\u2124"
+            if lean_type == "\u2124" and param.name in nat_params:
+                lean_type = "\u2115"
             param_binders.append(f"({param.name} : {lean_type})")
         all_params = " ".join(param_binders)
 
         return_type = self.translate_type(func.signature.return_type.to_string()) if func.signature.return_type else "\u2124"
+        # For recursive functions with \u2115 params, convert the return type to \u2115 as well.
+        # This avoids mixed-type coercions (e.g., ``n : \u2115`` but returning ``\u2124``),
+        # which can cause fragile proofs and ambiguous coercions.
+        if return_type == "\u2124" and nat_params:
+            return_type = "\u2115"
 
         # Translate body
         body_expr = self._translate_body_to_expr(func.body)
@@ -178,6 +188,25 @@ class IRToLeanCompiler:
             result.append(f"  : {return_type} :=")
 
         result.append(f"  {body_expr}")
+
+        # For recursive functions with \u2115 parameters, add a termination_by clause.
+        # This tells Lean's termination checker to use the \u2115 parameter as the
+        # decreasing measure, which makes patterns like ``if n = 0 then 1 else ...
+        # n * factorial (n - 1)`` pass the termination check (since ``n - 1 < n``
+        # for ``n > 0`` in \u2115).
+        if nat_params:
+            # Pick the first \u2115 parameter in declaration order as the
+            # termination measure. This is deterministic and predictable.
+            # For single-\u2115-param functions (the common case, e.g. factorial)
+            # this is sufficient. For multiple \u2115 params, preferring the
+            # first declaration-order param is the most likely decreasing one.
+            term_param = next(
+                (p.name for p in func.signature.parameters if p.name in nat_params),
+                None,
+            )
+            if term_param:
+                result.append(f"  termination_by {term_param}")
+
         return result
 
     def _translate_body_to_expr(self, body: List[StatementIR]) -> str:
@@ -295,13 +324,21 @@ class IRToLeanCompiler:
         if total > 1:
             theorem_name = f"{theorem_name}_{index}"
 
+        # Compute the correct hypothesis name for preconditions
+        hyp_name = "hpre" if len(preconditions) <= 1 else "h0"
+
         # Choose the best tactic
-        tactic = self._select_tactic_for_predicate(func_name, cleaned_pred)
+        tactic = self._select_tactic_for_predicate(func_name, cleaned_pred, func_ir, hyp_name)
+
+        # Determine which int params should be \u2115 (recursive + \u2265 0 precondition)
+        nat_params = self._get_nat_params(func_ir, func_name)
 
         # Build binder lines
         binder_lines: List[str] = []
         for param in func_ir.signature.parameters:
             lean_type = self.translate_type(param.type.to_string()) if param.type else "\u2124"
+            if lean_type == "\u2124" and param.name in nat_params:
+                lean_type = "\u2115"
             binder_lines.append(f"  ({param.name} : {lean_type})")
 
         # Add preconditions as hypotheses
@@ -327,8 +364,15 @@ class IRToLeanCompiler:
 
         return "\n".join(result)
 
-    def _select_tactic_for_predicate(self, func_name: str, pred: str) -> str:
-        """Pick a proof tactic for a correctness theorem."""
+    def _select_tactic_for_predicate(self, func_name: str, pred: str, func_ir: Optional[FunctionIR] = None, hyp_name: str = "hpre") -> str:
+        """Pick a proof tactic for a correctness theorem.
+
+        Args:
+            func_name: Name of the function being proved.
+            pred: The predicate (postcondition) to prove.
+            func_ir: The function IR for context (body inspection, etc.).
+            hyp_name: Name of the precondition hypothesis (e.g. ``hpre`` or ``h0``).
+        """
         stripped = pred.strip()
         # Strip any balanced outer parentheses for cleaner pattern matching
         while stripped.startswith("(") and stripped.endswith(")"):
@@ -338,8 +382,48 @@ class IRToLeanCompiler:
             else:
                 break
 
+        # Detect whether this is a recursive function with \u2115 parameters.
+        # Such functions need induction/cases-based tactics instead of
+        # omega/simp, which cannot handle recursive calls.
+        is_recursive_func = False
+        nat_params: set[str] = set()
+        term_param: Optional[str] = None
+        body_has_cond = False
+        body_uses_fdiv = False
+        if func_ir is not None:
+            is_recursive_func = self._is_recursive(func_ir)
+            if is_recursive_func:
+                nat_params = self._get_nat_params(func_ir, func_name)
+                if nat_params:
+                    term_param = next(
+                        (p.name for p in func_ir.signature.parameters if p.name in nat_params),
+                        None,
+                    )
+            # Check whether the function body contains if-expressions.
+            # Functions without conditionals (e.g., a single ``a / b``)
+            # don't need ``split_ifs`` in their proof tactics.
+            body_has_cond = self._body_has_conditional(func_ir)
+            # Check whether the function body uses floor division (``//``).
+            # Functions using ``Int.fdiv`` need specialised lemmas.
+            body_uses_fdiv = self._body_uses_fdiv(func_ir)
+
+        # For recursive \u2115 functions with comparison goals (\u2265, >, \u2264, <),
+        # use induction instead of omega — omega only handles linear arithmetic
+        # and cannot reason about recursive definitions.
+        if is_recursive_func and term_param and func_name in stripped:
+            if any(op in stripped for op in ("\u2265", ">", "\u2264", "<")):
+                return self._generate_induction_tactic(func_name, term_param)
+            # For disjunction goals (e.g., ``(n = 0) \u2228 (factorial n = ...)``),
+            # use case analysis on the \u2115 parameter instead of ``split_ifs``,
+            # which is more robust and avoids fragile branching.
+            if "\u2228" in stripped and func_name in stripped:
+                return self._generate_cases_tactic(func_name, term_param)
+
         # rfl: equality where the function call appears on both sides or is definitionally equal
-        if " = " in stripped and not any(c in stripped for c in ("\u2200", "\u2203", "\u2192", "\u2227", "\u2228")):
+        # IMPORTANT: `` = `` must NOT match inside compound operators like ``>=``, ``<=``, ``!=``.
+        # Use a regex with a negative lookbehind to skip those cases.
+        if re.search(r'(?<![><!=]) = ', stripped) \
+           and not any(c in stripped for c in ("\u2200", "\u2203", "\u2192", "\u2227", "\u2228")):
             left, right = stripped.split(" = ", 1)
             l, r = left.strip(), right.strip()
             if l == r:
@@ -356,34 +440,37 @@ class IRToLeanCompiler:
                     else:
                         break
                 if call_arg_str == rhs:
-                    return "rfl"
+                    return "rfl"                # Commutativity: check for a + b = b + a, a * b = b * a, etc.
+                # This handles cases where f a b = b + a (commutativity of +/*)
+                if l.startswith(f"{func_name} "):
+                    call_args = l[len(func_name):].strip().split()
+                    if len(call_args) >= 2:
+                        a, b = call_args[0], call_args[1]
+                        # De-parenthesize RHS for comparison
+                        rhs = r
+                        while rhs.startswith("(") and rhs.endswith(")"):
+                            inner = rhs[1:-1].strip()
+                            if inner.count("(") == inner.count(")"):
+                                rhs = inner
+                            else:
+                                break
 
-            # Commutativity: check for a + b = b + a, a * b = b * a, etc.
-            # This handles cases where f a b = b + a (commutativity of +/*)
-            if l.startswith(f"{func_name} "):
-                call_args = l[len(func_name):].strip().split()
-                if len(call_args) >= 2:
-                    a, b = call_args[0], call_args[1]
-                    # De-parenthesize RHS for comparison
-                    rhs = r
-                    while rhs.startswith("(") and rhs.endswith(")"):
-                        inner = rhs[1:-1].strip()
-                        if inner.count("(") == inner.count(")"):
-                            rhs = inner
-                        else:
-                            break
+                        # f a b = b + a  (commutativity) → unfold f, then use add_comm/mul_comm
+                        if rhs == f"{b} + {a}":
+                            return f"simp [{func_name}, add_comm]"
+                        if rhs == f"{b} * {a}":
+                            return f"simp [{func_name}, mul_comm]"
 
-                    # f a b = b + a  (commutativity) → unfold f, then use add_comm/mul_comm
-                    if rhs == f"{b} + {a}":
-                        return f"simp [{func_name}, add_comm]"
-                    if rhs == f"{b} * {a}":
-                        return f"simp [{func_name}, mul_comm]"
+                        # f a b = a + b  (matches function body) → definitional equality
+                        if rhs == f"{a} + {b}":
+                            return "rfl"
+                        if rhs == f"{a} * {b}":
+                            return "rfl"
 
-                    # f a b = a + b  (matches function body) → definitional equality
-                    if rhs == f"{a} + {b}":
-                        return "rfl"
-                    if rhs == f"{a} * {b}":
-                        return "rfl"
+                # Negation on the LHS (e.g., (¬ f(b)) = b) — rfl is wrong
+                # Unfold the function and use simp (handles Bool double-negation)
+                if "\u00ac" in l and func_name in l:
+                    return f"simp [{func_name}]"
 
                 # Fallback: rfl for simple equalities — Lean can unfold definitions
                 if not any(c in r for c in ("\u2200", "\u2203", "\u2192", "\u2227", "\u2228")):
@@ -411,10 +498,40 @@ class IRToLeanCompiler:
             if any(op in stripped for op in ("\u2265", ">", "\u2264", "<")):
                 return f"unfold {func_name}; omega"
 
+        # Negation equality involving a function call (e.g., (¬ f(b)) = b)
+        # Unfold the function and use simp — handles Bool double-negation via simp
+        if "\u00ac" in stripped and "=" in stripped and func_name in stripped:
+            return f"simp [{func_name}]"
+
         # Function-call goal with pure conjunction (no disjunction), e.g.
         # ``lo <= f x ∧ f x <= hi``.
         # Typical for postconditions involving bounds like clamp.
         if "\u2227" in stripped and func_name in stripped and "\u2228" not in stripped:
+            if body_uses_fdiv:
+                # Function uses ``Int.fdiv`` (floor division).
+                # Use the specialised Mathlib lemmas for integer floor division.
+                # ``Int.fdiv_mul_add_fmod a b`` gives ``a.fdiv b * b + a.fmod b = a``
+                # ``Int.lt_fdiv_add_one_mul_self a hb`` gives ``a < (Int.fdiv a b + 1) * b``
+                # The precondition name is ``hpre`` (or ``h0`` for the first one).
+                func_args = [p.name for p in func_ir.signature.parameters] if func_ir else []
+                a_arg = func_args[0] if len(func_args) >= 1 else "a"
+                b_arg = func_args[1] if len(func_args) >= 2 else "b"
+                return (
+                    f"unfold {func_name}; constructor\n"
+                    f"    \u00b7 have h := Int.fdiv_mul_add_fmod {a_arg} {b_arg}\n"
+                    f"      have hfmod_nonneg : 0 \u2264 Int.fmod {a_arg} {b_arg} :=\n"
+                    f"        by\n"
+                    f"          have h_eq : Int.fmod {a_arg} {b_arg} = Int.emod {a_arg} {b_arg} :=\n"
+                    f"            Int.fmod_eq_emod_of_nonneg (le_of_lt {hyp_name})\n"
+                    f"          rw [h_eq]\n"
+                    f"          exact Int.emod_nonneg {a_arg} (ne_of_gt {hyp_name})\n"
+                    f"      nlinarith\n"
+                    f"    \u00b7 exact Int.lt_fdiv_add_one_mul_self {a_arg} {hyp_name}"
+                )
+            if not body_has_cond:
+                # No if-expressions in body — ``split_ifs`` would be a no-op.
+                # Use constructor with omega for non-recursive non-division goals.
+                return f"unfold {func_name}; constructor <;> omega"
             return f"unfold {func_name}; split_ifs <;> constructor <;> linarith"
 
         # Function-call goal with mixed conjunction and disjunction
@@ -430,6 +547,144 @@ class IRToLeanCompiler:
             return f"unfold {func_name}; split_ifs <;> simp"
 
         return "sorry"
+
+    # ── Recursion & ℕ detection ────────────────────────────────────────
+
+    @staticmethod
+    def _expr_references_function(expr: Optional[ExpressionIR], func_name: str) -> bool:
+        """Check if an expression tree contains a call to the given function name.
+
+        Recursively walks all sub-expressions (left, right, operand, func, target,
+        index, args, elements) looking for ``call`` nodes whose ``func.name``
+        matches the target function name.
+        """
+        if expr is None:
+            return False
+        if expr.expr_type == "call":
+            if expr.func and expr.func.expr_type == "variable" and expr.func.name == func_name:
+                return True
+        for attr in ("left", "right", "operand", "func", "target", "index"):
+            child = getattr(expr, attr, None)
+            if child is not None and IRToLeanCompiler._expr_references_function(child, func_name):
+                return True
+        for child in expr.args:
+            if IRToLeanCompiler._expr_references_function(child, func_name):
+                return True
+        for child in expr.elements:
+            if IRToLeanCompiler._expr_references_function(child, func_name):
+                return True
+        return False
+
+    @staticmethod
+    def _stmt_references_function(stmt: StatementIR, func_name: str) -> bool:
+        """Check if a statement (or its sub-statements) references the given function."""
+        for attr in ("value", "expression", "condition", "target"):
+            expr = getattr(stmt, attr, None)
+            if expr is not None and IRToLeanCompiler._expr_references_function(expr, func_name):
+                return True
+        for substmt in stmt.body + stmt.orelse:
+            if IRToLeanCompiler._stmt_references_function(substmt, func_name):
+                return True
+        return False
+
+    def _is_recursive(self, func: FunctionIR) -> bool:
+        """Return True if the function body contains a direct recursive call."""
+        func_name = func.signature.name
+        for stmt in func.body:
+            if self._stmt_references_function(stmt, func_name):
+                return True
+        return False
+
+    @staticmethod
+    def _body_has_conditional(func: FunctionIR) -> bool:
+        """Return True if the function body contains if-expressions.
+
+        This is used during tactic selection: functions without conditionals
+        don't need ``split_ifs`` in their proof tactics. Walking the full
+        statement tree covers nested ifs inside if-branches.
+        """
+        def _stmt_has_if(stmt: StatementIR) -> bool:
+            if stmt.stmt_type == "if":
+                return True
+            for s in stmt.body + stmt.orelse:
+                if _stmt_has_if(s):
+                    return True
+            return False
+        for stmt in func.body:
+            if _stmt_has_if(stmt):
+                return True
+        return False
+
+    @staticmethod
+    def _body_uses_fdiv(func: FunctionIR) -> bool:
+        """Return True if the function body contains floor division (``//``).
+
+        In Python, ``//`` is floor division which maps to ``Int.fdiv`` in Lean.
+        Functions using ``Int.fdiv`` need specialised tactics using
+        ``Int.fdiv_mul_le`` and ``Int.lt_fdiv_add_one_mul_self``.
+        """
+        def _expr_uses_fdiv(expr: Optional[ExpressionIR]) -> bool:
+            if expr is None:
+                return False
+            if expr.expr_type == "binary_op" and expr.op == "//":
+                return True
+            for attr in ("left", "right", "operand"):
+                child = getattr(expr, attr, None)
+                if child is not None and _expr_uses_fdiv(child):
+                    return True
+            return False
+        def _stmt_uses_fdiv(stmt: StatementIR) -> bool:
+            for attr in ("value", "expression", "condition"):
+                expr = getattr(stmt, attr, None)
+                if expr is not None and _expr_uses_fdiv(expr):
+                    return True
+            for s in stmt.body + stmt.orelse:
+                if _stmt_uses_fdiv(s):
+                    return True
+            return False
+        for stmt in func.body:
+            if _stmt_uses_fdiv(stmt):
+                return True
+        return False
+
+    def _get_nat_params(self, func: FunctionIR, func_name: str) -> set[str]:
+        """Return the set of parameter names that should use ``\u2115`` instead of ``\u2124``.
+
+        A parameter qualifies for ``\u2115`` when:
+        1. The function is recursive (calls itself).
+        2. There is a precondition ``param >= 0`` or ``param > 0`` (after stripping
+           type-assertions like ``isinstance``).
+
+        This lets recursive functions like ``factorial`` with ``@requires(lambda n: n >= 0)``
+        generate well-founded Lean ``def``\u2019s over ``\u2115`` instead of ``\u2124``.
+        """
+        if not self._is_recursive(func):
+            return set()
+
+        nat_params: set[str] = set()
+
+        # Gather preconditions for this function from the spec collection
+        preconditions: List[str] = []
+        if self._specs:
+            for ob in self._specs.all:
+                if ob.kind == ObligationKind.PRECONDITION and ob.function == func_name:
+                    stripped = self._strip_type_assertions(ob.predicate)
+                    if stripped and stripped not in ("and", "or", ""):
+                        preconditions.append(stripped)
+
+        if not preconditions:
+            return set()
+
+        pred_text = " ".join(preconditions)
+
+        for param in func.signature.parameters:
+            if param.type and param.type.name == "int":
+                # Match param >= 0, param > 0, (param >= 0), etc.
+                pattern = rf'\b{re.escape(param.name)}\s*(>=|>)\s*0\b'
+                if re.search(pattern, pred_text):
+                    nat_params.add(param.name)
+
+        return nat_params
 
     # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -452,6 +707,9 @@ class IRToLeanCompiler:
         Handles deeply nested parenthesized structure from the spec parser:
         ``(((isinstance(x, int) and isinstance(lo, int)) and isinstance(hi, int)) and (lo <= hi))``
         returns ``lo <= hi``.
+
+        Also handles the case where after removing isinstance calls, leftover artefacts
+        like ``(( and ) and (b > 0))`` are cleaned down to ``b > 0``.
         """
         p = predicate.strip()
 
@@ -462,12 +720,26 @@ class IRToLeanCompiler:
         # Clean up: remove empty parentheses ``()`` or ``(  )``
         lowered = re.sub(r'\(\s*\)', '', lowered)
 
-        # Clean up: remove stray `and`/`or` operators from collapsed structure
+        # Clean up: remove stray `and`/`or` operators from collapsed structure.
+        # This handles the ``( and ) ...`` pattern left after stripping isinstance
+        # from chained comparisons like ``(isinstance(a, int) and (b > 0))``.
         lowered = re.sub(r'\s+(and|or)\s+(and|or)\s+', ' ', lowered)
+
+        # Remove ``( and )`` and similar patterns: parenthesised stray operators
+        lowered = re.sub(r'\(\s*and\s*\)', '', lowered)
+        lowered = re.sub(r'\(\s*or\s*\)', '', lowered)
 
         # Remove leading/trailing operators and dangling parens
         lowered = re.sub(r'(^|[\s(])(and|or)\s+', ' ', lowered)
         lowered = re.sub(r'\s+(and|or)(\s|[)])$', ' ', lowered)
+
+        # Remove ``) and (`` → ``) (`` → then collapse
+        lowered = re.sub(r'\)\s+and\s+\(', ') (', lowered)
+
+        # Final pass: remove any remaining isolated ``(`` or ``)`` that are adjacent
+        # to whitespace (orphaned from the isinstance removal)
+        lowered = re.sub(r'\(\s+\)', '', lowered)
+        lowered = re.sub(r'\)\s+\(', '', lowered)
 
         # Flatten whitespace
         lowered = re.sub(r'\s+', ' ', lowered).strip()
@@ -477,7 +749,7 @@ class IRToLeanCompiler:
 
         # Final cleanup: if the result is just an operator or empty, return ""
         lowered = lowered.strip()
-        if lowered in ('and', 'or', '', '(', ')'):
+        if lowered in ('and', 'or', '', '(', ')') or not lowered:
             return ""
 
         return lowered
@@ -488,6 +760,10 @@ class IRToLeanCompiler:
 
         Handles the spec parser's nested binary format ``((a <= b) <= c)``
         and produces ``(a ≤ b) ∧ (b ≤ c)``.
+
+        Guards against false positives where compound operators like ``>=``
+        are matched as two separate operators (``>`` + ``=``) with an empty
+        middle term.
         """
         p = pred.strip()
 
@@ -502,7 +778,9 @@ class IRToLeanCompiler:
         )
         if m:
             t1, op1, t2, op2, t3 = m.groups()
-            return f"({t1.strip()} {op1.strip()} {t2.strip()}) \u2227 ({t2.strip()} {op2.strip()} {t3.strip()})"
+            if t2.strip():
+                return f"({t1.strip()} {op1.strip()} {t2.strip()}) \u2227 ({t2.strip()} {op2.strip()} {t3.strip()})"
+            return pred
 
         # Flat format: term1 op1 term2 op2 term3 — only when NO logical
         # connectives (∧, ∨) are present in the predicate. This prevents false
@@ -514,7 +792,10 @@ class IRToLeanCompiler:
             m = re.match(pattern, p)
             if m:
                 term1, op1, term2, op2, term3 = m.groups()
-                return f"({term1.strip()} {op1.strip()} {term2.strip()}) \u2227 ({term2.strip()} {op2.strip()} {term3.strip()})"
+                # Guard: middle term must be non-empty to prevent splitting
+                # compound operators (e.g., ``>=`` → ``>`` + ``=``).
+                if term2.strip():
+                    return f"({term1.strip()} {op1.strip()} {term2.strip()}) \u2227 ({term2.strip()} {op2.strip()} {term3.strip()})"
 
         return pred
 
@@ -590,6 +871,11 @@ class IRToLeanCompiler:
     def _translate_binary_op(self, expr: ExpressionIR) -> str:
         left = self.translate_expression(expr.left) if expr.left else "?"
         right = self.translate_expression(expr.right) if expr.right else "?"
+        # Python's ``//`` is floor division, which maps to ``Int.fdiv`` in Lean/Mathlib.
+        # Regular ``/`` in Lean on \u2124 is truncating division (toward zero), which differs
+        # from Python floor division for negative numbers.
+        if expr.op == "//":
+            return f"(Int.fdiv {left} {right})"
         op = _BINOP_TO_LEAN.get(expr.op, f" {expr.op} ")
         return f"({left}{op}{right})"
 
@@ -660,13 +946,53 @@ class IRToLeanCompiler:
     def obligation_to_predicate_lean(ob: ProofObligation) -> str:
         """Convert a proof obligation's predicate to a Lean 4 proposition string."""
         pred = ob.predicate.strip()
+        # Order matters: longer operators (<=, >=) before shorter ones (<, >)
         replacements = [
-            ("==", "="), ("!=", " \u2260 "), (" and ", " \u2227 "), (" or ", " \u2228 "),
+            ("<=", " \u2264 "), (">=", " \u2265 "),
+            ("==", "="), ("!=", " \u2260 "),
+            (" and ", " \u2227 "), (" or ", " \u2228 "),
             ("not ", "\u00ac "), ("True", "true"), ("False", "false"),
         ]
         for old, new in replacements:
             pred = pred.replace(old, new)
         return re.sub(r'\s+', ' ', pred).strip()
+
+    @staticmethod
+    def _generate_induction_tactic(func_name: str, param: str) -> str:
+        """Generate an induction-based tactic for recursive \u2115 functions with comparison goals.
+
+        ``omega`` cannot handle recursive definitions, so we use structural
+        induction on the \u2115 parameter. The generated tactic is::
+
+            induction n with
+            | zero => unfold foo; simp
+            | succ n ih => unfold foo; split_ifs <;> nlinarith
+
+        ``nlinarith`` can handle the non-linear arithmetic that arises from
+        multiplication in the recursive body (e.g., ``(n+1) * factorial n >= 1``).
+        """
+        return (
+            f"induction {param} with\n"
+            f"| zero => unfold {func_name}; simp\n"
+            f"| succ {param} ih => unfold {func_name}; split_ifs <;> simp [Nat.succ_sub_succ, Nat.sub_zero] <;> nlinarith"
+        )
+
+    @staticmethod
+    def _generate_cases_tactic(func_name: str, param: str) -> str:
+        """Generate a case-analysis tactic for recursive \u2115 functions with disjunction goals.
+
+        For goals like ``(n = 0) \u2228 (factorial n = n * factorial(n - 1))``,
+        case analysis on the \u2115 parameter is more robust than ``split_ifs``::
+
+            cases n with
+            | zero => left; rfl
+            | succ n => right; simp [func_name]
+        """
+        return (
+            f"cases {param} with\n"
+            f"| zero => left; rfl\n"
+            f"| succ {param} => right; simp [{func_name}]"
+        )
 
     @staticmethod
     def _format_proof_block(tactic: str) -> str:
